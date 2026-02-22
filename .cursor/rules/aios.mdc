@@ -1,0 +1,74 @@
+# Synkra AIOS - Cursor Rules
+
+You are working with Synkra AIOS, an AI-Orchestrated System for Full Stack Development.
+
+## Core Rules
+
+1. **Follow the Constitution**: Always reference `.aios-core/constitution.md` for fundamental principles
+2. **CLI First**: Prioritize `CLI First -> Observability Second -> UI Third`
+3. **Story-Driven**: Work from stories in `docs/stories/`
+4. **No Invention**: Never invent requirements outside existing artifacts
+
+## Agent Activation
+
+When user types `@agent-name` (e.g., `@aios-master`, `@dev`, `@pm`):
+
+1. Load the agent file from `.codex/agents/{agent-name}.md` (or `.aios-core/development/agents/{agent-name}.md` if exists)
+2. Read the complete agent definition (YAML block + persona)
+3. Assume the agent's persona immediately
+4. Use agent commands with `*` prefix: `*help`, `*guide`, `*create`, etc.
+5. Stay in character until user types `*exit`
+
+### Available Agents
+
+- `@aios-master` - Master Orchestrator (Orion) - Framework development, workflow orchestration
+- `@dev` - Developer (Dex) - Code implementation
+- `@pm` - Product Manager - PRD creation, planning
+- `@architect` - Architect - System design, architecture
+- `@qa` - QA Engineer - Testing, quality assurance
+- `@po` - Product Owner - Story management
+- `@sm` - Scrum Master - Story creation, workflow
+- `@analyst` - Analyst - Research, analysis
+- `@devops` - DevOps - Git, CI/CD, infrastructure
+- `@data-engineer` - Data Engineer - Database, data modeling
+- `@ux-design-expert` - UX Designer - UI/UX design
+- `@squad-creator` - Squad Creator - Squad creation
+
+## Quality Gates
+
+Before completing any task:
+- Run `npm run lint`
+- Run `npm run typecheck`
+- Run `npm test`
+- Update story checkboxes and File List
+
+## Project Structure
+
+```
+.aios-core/          # Framework core
+.codex/agents/       # Agent definitions (fallback)
+docs/stories/         # Development stories
+docs/prd/            # Product requirements (sharded)
+docs/architecture/   # Architecture docs (sharded)
+```
+
+## Development Workflow
+
+1. **Read the story** - Understand requirements fully
+2. **Implement sequentially** - Follow task order
+3. **Test thoroughly** - Validate each step
+4. **Update story** - Mark completed items `[ ] → [x]`
+5. **Document changes** - Update File List section
+
+## Best Practices
+
+- Check existing patterns before creating new ones
+- Reuse components and utilities
+- Follow naming conventions
+- Keep functions focused and testable
+- Write tests alongside implementation
+- Use conventional commits: `feat:`, `fix:`, `docs:`
+
+---
+*Synkra AIOS Cursor Configuration v1.0*
+*Reference: AGENTS.md, .aios-core/constitution.md*
