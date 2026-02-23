@@ -4,8 +4,9 @@ PDF Reader with hybrid text/OCR extraction
 import pdfplumber
 import pytesseract
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from fuzzywuzzy import fuzz
 
 
 @dataclass
@@ -24,6 +25,9 @@ class PDFReader:
     CONFIANCA_TEXTO = 0.95
     CONFIANCA_OCR = 0.70
     LIMIAR_MINIMO_CHARS = 50  # If < 50 chars, try OCR
+
+    # Fuzzy matching thresholds
+    FUZZY_MATCH_THRESHOLD = 0.75  # 75% match = valid match
 
     @staticmethod
     def read_pdf(pdf_path: str) -> List[PaginaExtraida]:
@@ -219,3 +223,168 @@ class PDFReader:
                 "metadados": {},
                 "erro": str(e),
             }
+
+    @staticmethod
+    def fuzzy_match(text1: str, text2: str, threshold: float = None) -> Tuple[bool, float]:
+        """
+        Perform fuzzy string matching with configurable threshold
+
+        Args:
+            text1: First text to compare
+            text2: Second text to compare
+            threshold: Match threshold (default: FUZZY_MATCH_THRESHOLD)
+
+        Returns:
+            Tuple of (is_match, score) where score is 0-100
+        """
+        if threshold is None:
+            threshold = PDFReader.FUZZY_MATCH_THRESHOLD * 100
+
+        score = fuzz.token_set_ratio(text1.lower(), text2.lower())
+        is_match = score >= threshold
+
+        return is_match, score / 100.0
+
+    @staticmethod
+    def detect_template_type(texto: str) -> Tuple[Optional[str], float]:
+        """
+        Detect holerite template type using fuzzy matching
+
+        Supports: DDPE, SPPREV_APOSENTADO, SPPREV_PENSIONISTA
+
+        Args:
+            texto: Extracted text from page
+
+        Returns:
+            Tuple of (template_type, confidence) or (None, 0.0) if no match
+        """
+        if not texto or len(texto.strip()) < 20:
+            return None, 0.0
+
+        texto_lower = texto.lower()
+
+        # Template-specific keywords with priority/weight
+        # Format: template_type -> (primary_keywords, secondary_keywords)
+        template_patterns = {
+            "DDPE": (
+                ["departamento de despesa", "ddpe"],  # Primary
+                ["secretaria de estado", "folha de pagamento"],  # Secondary
+            ),
+            "SPPREV_PENSIONISTA": (
+                ["spprev", "pensionista"],  # Primary
+                ["pensao", "beneficiario"],  # Secondary
+            ),
+            "SPPREV_APOSENTADO": (
+                ["spprev", "aposentado"],  # Primary
+                ["aposentadoria", "inativo"],  # Secondary
+            ),
+        }
+
+        # Calculate match scores for each template
+        best_template = None
+        best_score = 0.0
+
+        for template_type, (primary_kw, secondary_kw) in template_patterns.items():
+            primary_matches = 0
+            secondary_matches = 0
+
+            # Check primary keywords (exact or fuzzy match)
+            for keyword in primary_kw:
+                # Try exact match first
+                if keyword in texto_lower:
+                    primary_matches += 1
+                else:
+                    # Try fuzzy match (lowered to 60% for OCR tolerance)
+                    is_match, score = PDFReader.fuzzy_match(keyword, texto_lower, threshold=60.0)
+                    if is_match:
+                        primary_matches += 1
+
+            # Check secondary keywords (exact or fuzzy match)
+            for keyword in secondary_kw:
+                # Try exact match first
+                if keyword in texto_lower:
+                    secondary_matches += 1
+                else:
+                    # Try fuzzy match (lowered to 60% for OCR tolerance)
+                    is_match, score = PDFReader.fuzzy_match(keyword, texto_lower, threshold=60.0)
+                    if is_match:
+                        secondary_matches += 1
+
+            # Calculate weighted score
+            # Primary matches have higher weight
+            total_matches = primary_matches * 2 + secondary_matches
+            max_possible = len(primary_kw) * 2 + len(secondary_kw)
+
+            if max_possible > 0:
+                template_score = total_matches / max_possible
+            else:
+                template_score = 0.0
+
+            if template_score > best_score and template_score >= PDFReader.FUZZY_MATCH_THRESHOLD:
+                best_score = template_score
+                best_template = template_type
+
+        return best_template, best_score
+
+    @staticmethod
+    def find_best_template_match(
+        texto: str, candidates: Optional[List[str]] = None
+    ) -> Tuple[Optional[str], float]:
+        """
+        Find best matching template from candidates using fuzzy matching
+
+        Args:
+            texto: Extracted text from page
+            candidates: List of candidate template identifiers (default: all supported)
+
+        Returns:
+            Tuple of (best_match, confidence) or (None, 0.0) if no match above threshold
+        """
+        if not texto or len(texto.strip()) < 20:
+            return None, 0.0
+
+        if candidates is None:
+            candidates = ["DDPE", "SPPREV_APOSENTADO", "SPPREV_PENSIONISTA"]
+
+        # If only one candidate, use detect_template_type and filter by candidate
+        if len(candidates) == 1:
+            detected_type, score = PDFReader.detect_template_type(texto)
+            if detected_type == candidates[0]:
+                return detected_type, score
+            return None, 0.0
+
+        # For multiple candidates, use detect_template_type and check if result is in candidates
+        detected_type, score = PDFReader.detect_template_type(texto)
+
+        if detected_type in candidates:
+            return detected_type, score
+
+        # If no match in detect_template_type, try fuzzy matching on keywords
+        scores = {}
+        texto_lower = texto.lower()
+
+        template_keywords = {
+            "DDPE": ["departamento", "ddpe"],
+            "SPPREV_APOSENTADO": ["spprev", "aposentado"],
+            "SPPREV_PENSIONISTA": ["spprev", "pensionista"],
+        }
+
+        for candidate in candidates:
+            if candidate in template_keywords:
+                keyword_matches = sum(
+                    1 for kw in template_keywords[candidate] if kw in texto_lower
+                )
+                candidate_score = keyword_matches / len(template_keywords[candidate])
+                scores[candidate] = candidate_score
+
+        if not scores:
+            return None, 0.0
+
+        best_candidate = max(scores, key=scores.get)
+        best_score = scores[best_candidate]
+
+        # Return only if above threshold
+        if best_score >= PDFReader.FUZZY_MATCH_THRESHOLD:
+            return best_candidate, best_score
+
+        return None, 0.0
