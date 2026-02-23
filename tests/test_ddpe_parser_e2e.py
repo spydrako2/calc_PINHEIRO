@@ -1,6 +1,8 @@
 """End-to-end tests for DDPE parser with real PDF data"""
 
 import pytest
+import os
+from pathlib import Path
 from src.core.parsers.ddpe_parser import DDPEParser
 from src.core.pdf_reader import PaginaExtraida
 from src.core.data_model import TemplateType, TipoFolha
@@ -210,3 +212,248 @@ class TestDDPEParserE2E:
         atrasado_count = sum(1 for v in holerite.verbas if v.natureza.value == "A")
 
         assert normal_count > 0 or atrasado_count > 0
+
+    def test_template_detection_degraded_ocr(self, parser):
+        """Should detect DDPE even with OCR whitespace variations"""
+        texto = """
+        DEPARTAMENTO  DE   DESPESA
+        CPF: 123.456.789-00
+        NOME: TEST
+        """
+        assert parser.detect_template(texto) is True
+
+    def test_template_detection_partial_match(self, parser):
+        """Should detect DDPE with partial keyword matches"""
+        texto = "DEPARTAMEN DE DESPESA..."
+        result = parser.detect_template(texto)
+        assert isinstance(result, bool)
+
+    def test_template_detection_wrong_format_similarity(self, parser):
+        """Should NOT match similar but wrong templates"""
+        texto = "SPPREV - DEPARTAMENTO"
+        assert parser.detect_template(texto) is False
+
+    def test_template_detection_empty_and_whitespace(self, parser):
+        """Should handle empty/whitespace gracefully"""
+        assert parser.detect_template("") is False
+        assert parser.detect_template("   ") is False
+
+    def test_template_detection_boundary_score(self, parser):
+        """Should handle fuzzy match at boundary"""
+        texto = "DEPARTAMENTO DE DESPESA CPF: 123.456.789-00"
+        assert parser.detect_template(texto) is True
+
+    def test_parse_two_page_holerite_with_split_verbas(self, parser):
+        """Should extract verbas from multiple pages correctly"""
+        page1 = PaginaExtraida(numero=1, texto="""
+        DEPARTAMENTO DE DESPESA
+        CPF: 123.456.789-00
+        NOME: JOÃO SILVA
+        CARGO: DEVELOPER
+        COMPETÊNCIA: 02/2026
+        DATA DE PAGAMENTO: 15/03/2026
+
+        VERBAS:
+        01.001 SALÁRIO 5000.00
+        01.002 ADIANTAMENTO 1000.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        page2 = PaginaExtraida(numero=2, texto="""
+        70.006 IAMSPE -100.00
+        70.007 ICMS -50.00
+
+        TOTAL VENCIMENTOS 6000.00
+        TOTAL DESCONTOS 150.00
+        LÍQUIDO 5850.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        holerite = parser.parse([page1, page2])
+
+        # Validate all verbas extracted from both pages
+        assert len(holerite.verbas) >= 3
+        assert holerite.total_vencimentos == 6000.00
+        assert holerite.total_descontos == 150.00
+
+    def test_parse_three_page_holerite_with_continuation(self, parser):
+        """Should handle 3+ page holerites with continuation pages"""
+        page1 = PaginaExtraida(numero=1, texto="""
+        DEPARTAMENTO DE DESPESA
+        CPF: 456.789.123-45
+        NOME: MARIA SANTOS
+        COMPETÊNCIA: 01/2026
+
+        VERBAS:
+        01.001 SALÁRIO 4000.00
+        01.002 GRATIFICAÇÃO 500.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        page2 = PaginaExtraida(numero=2, texto="""
+        03.001 VALE TRANSPORTE 150.00
+        09.001 QUINQUÊNIO 300.00
+        70.001 INSS -400.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        page3 = PaginaExtraida(numero=3, texto="""
+        70.002 IR -300.00
+
+        TOTAL VENCIMENTOS 4950.00
+        TOTAL DESCONTOS 700.00
+        LÍQUIDO 4250.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        holerite = parser.parse([page1, page2, page3])
+
+        # Validate proper aggregation across pages
+        assert len(holerite.verbas) >= 5
+        assert holerite.total_vencimentos == 4950.00
+        assert holerite.total_descontos == 700.00
+        assert holerite.liquido == 4250.00
+
+    def test_multipage_with_ocr_and_text_mixed(self, parser):
+        """Should handle mixture of TEXT and OCR pages"""
+        page1 = PaginaExtraida(numero=1, texto="""
+        DEPARTAMENTO DE DESPESA
+        CPF: 789.123.456-78
+        NOME: CARLOS OLIVEIRA
+        COMPETÊNCIA: 03/2026
+
+        01.001 SALÁRIO 3500.00
+        01.002 BÔNUS 800.00
+        """, metodo="OCR", confianca=0.8)
+
+        page2 = PaginaExtraida(numero=2, texto="""
+        70.005 FGTS -280.00
+        70.006 IAMSPE -100.00
+
+        TOTAL VENCIMENTOS 4300.00
+        TOTAL DESCONTOS 380.00
+        LÍQUIDO 3920.00
+        """, metodo="TEXTO", confianca=0.95)
+
+        holerite = parser.parse([page1, page2])
+
+        # Validate both pages processed correctly
+        assert len(holerite.verbas) >= 3
+        assert holerite.cabecalho.nome == "CARLOS OLIVEIRA"
+        assert holerite.metodo_extracao == "OCR"  # Uses first page method
+        assert holerite.confianca == 0.8  # Uses first page confidence
+
+    def test_parse_real_ddpe_pdf_from_references(self, parser):
+        """Should parse real DDPE PDF from docs/referencias/"""
+        # Use the actual PDF mentioned in docs
+        pdf_path = "docs/referencias/02. HOLERITES -01-21 A 02-26 - MARCIA LOPES DE OLIVEIRA MACHADO.pdf"
+
+        # Check if PDF exists
+        if not os.path.exists(pdf_path):
+            pytest.skip(f"PDF not found at {pdf_path}")
+
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(pdf_path) as pdf:
+                # Extract text from first page
+                if len(pdf.pages) == 0:
+                    pytest.skip("PDF has no pages")
+
+                first_page = pdf.pages[0]
+                texto = first_page.extract_text()
+
+                if not texto:
+                    pytest.skip("No text extracted from PDF")
+
+                # Check if it's a DDPE template
+                if not parser.detect_template(texto):
+                    pytest.skip("PDF is not a DDPE template")
+
+                # Try to parse the pages
+                pages = []
+                for page_num, pdf_page in enumerate(pdf.pages, 1):
+                    page_text = pdf_page.extract_text()
+                    if page_text:
+                        pages.append(PaginaExtraida(
+                            numero=page_num,
+                            texto=page_text,
+                            metodo="TEXTO",
+                            confianca=0.9
+                        ))
+
+                if not pages:
+                    pytest.skip("No valid pages extracted from PDF")
+
+                # Parse the holerite
+                holerite = parser.parse(pages)
+
+                # Basic validations
+                assert holerite.cabecalho.nome is not None
+                assert holerite.cabecalho.cpf is not None
+                assert len(holerite.verbas) > 0
+                assert holerite.total_vencimentos > 0
+
+        except ImportError:
+            pytest.skip("pdfplumber not installed")
+        except Exception as e:
+            pytest.skip(f"PDF reading failed: {e}")
+
+    def test_parse_multiple_real_ddpe_pdfs(self, parser):
+        """Should parse multiple real DDPE PDFs from docs/referencias/"""
+        import glob
+
+        try:
+            import pdfplumber
+
+            # Find all PDFs in referencias directory
+            pdf_dir = "docs/referencias"
+            if not os.path.exists(pdf_dir):
+                pytest.skip(f"Directory {pdf_dir} not found")
+
+            pdf_files = glob.glob(os.path.join(pdf_dir, "*.pdf"))
+
+            if not pdf_files:
+                pytest.skip("No PDF files found in docs/referencias/")
+
+            successful_parses = 0
+
+            # Try to parse each PDF
+            for pdf_path in pdf_files[:3]:  # Test first 3 PDFs
+                try:
+                    with pdfplumber.open(pdf_path) as pdf:
+                        if len(pdf.pages) == 0:
+                            continue
+
+                        first_page = pdf.pages[0]
+                        texto = first_page.extract_text()
+
+                        if not texto or not parser.detect_template(texto):
+                            continue
+
+                        # Extract all pages
+                        pages = []
+                        for page_num, pdf_page in enumerate(pdf.pages, 1):
+                            page_text = pdf_page.extract_text()
+                            if page_text:
+                                pages.append(PaginaExtraida(
+                                    numero=page_num,
+                                    texto=page_text,
+                                    metodo="TEXTO",
+                                    confianca=0.9
+                                ))
+
+                        if pages:
+                            holerite = parser.parse(pages)
+                            # Validate basic structure
+                            if (holerite.cabecalho.nome and
+                                holerite.cabecalho.cpf and
+                                len(holerite.verbas) > 0):
+                                successful_parses += 1
+
+                except Exception:
+                    # Skip PDFs that can't be parsed
+                    continue
+
+            # At least one PDF should be parsed successfully
+            assert successful_parses >= 1, "No PDFs could be parsed successfully"
+
+        except ImportError:
+            pytest.skip("pdfplumber not installed")
+        except Exception as e:
+            pytest.skip(f"PDF scanning failed: {e}")

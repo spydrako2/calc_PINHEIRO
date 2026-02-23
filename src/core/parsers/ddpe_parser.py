@@ -164,106 +164,106 @@ class DDPEParser(BaseParser):
 
         verbas = []
 
-        # Extract from all pages (header on page 1, continuation on subsequent pages)
-        for page in self.paginas:
-            texto = page.texto
-            lines = texto.split('\n')
-
-        # Detect context for natureza detection
-        is_atrasado_section = False
-        is_reposicao_section = False
-
         # Regex pattern: CÓDIGO at start, then DENOMINAÇÃO, then VALOR at end
         # This is more robust than trying to capture intermediate whitespace
         codigo_start_pattern = r'^(\d{2}\.?\d{3})'
         valor_end_pattern = r'([-]?\d+[.,]\d{2})\s*$'
 
-        for i, line in enumerate(lines):
-            line_upper = line.upper()
-            line_stripped = line.strip()
+        # Extract from all pages (header on page 1, continuation on subsequent pages)
+        for page in self.paginas:
+            texto = page.texto
+            lines = texto.split('\n')
 
-            # Check for section markers
-            if 'ATRASADO' in line_upper:
-                is_atrasado_section = True
-                is_reposicao_section = False
-                continue
-            elif 'REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper:
-                is_reposicao_section = True
-                is_atrasado_section = False
-                continue
-            elif 'TOTAL' in line_upper or 'LÍQUIDO' in line_upper:
-                break
+            # Detect context for natureza detection
+            is_atrasado_section = False
+            is_reposicao_section = False
 
-            # Skip empty lines and headers
-            if not line_stripped or 'CÓDIGO' in line_upper or 'DENOMINAÇÃO' in line_upper:
-                continue
+            for i, line in enumerate(lines):
+                line_upper = line.upper()
+                line_stripped = line.strip()
 
-            # Try to extract codigo at start of line
-            codigo_match = re.match(codigo_start_pattern, line_stripped)
-            if not codigo_match:
-                continue
-
-            # Try to extract valor at end of line
-            valor_match = re.search(valor_end_pattern, line_stripped)
-            if not valor_match:
-                continue
-
-            # Extract denominacao from middle
-            codigo_raw = codigo_match.group(1)
-            valor_str = valor_match.group(1)
-
-            # Denominacao is everything between codigo and valor
-            codigo_end = codigo_match.end()
-            valor_start = valor_match.start()
-            denominacao = line_stripped[codigo_end:valor_start].strip()
-
-            try:
-                # Normalize valor (handle both Brazilian 1.000,00 and American 1000.00 formats)
-                # If there's a comma, it's Brazilian format: 1.000,00
-                # If there's only dot and looks like American: 1000.00
-                if ',' in valor_str:
-                    # Brazilian format: remove dots (thousands), replace comma with dot
-                    valor_normalized = valor_str.replace('.', '').replace(',', '.')
-                elif valor_str.count('.') == 1 and valor_str.endswith(('.00', '.50', '.25', '.75')):
-                    # American format (ends with .00, .50, etc.)
-                    valor_normalized = valor_str
-                else:
-                    # Default: assume Brazilian format
-                    valor_normalized = valor_str.replace('.', '').replace(',', '.')
-
-                valor = float(valor_normalized)
-
-                # Normalize código
-                from src.core.normalizer import CodigoVerbaNotmalizer
-                codigo = CodigoVerbaNotmalizer.normalize(codigo_raw)
-
-                # Determine natureza
-                natureza = NaturezaVerba.NORMAL
-                if is_atrasado_section:
-                    natureza = NaturezaVerba.ATRASADO
-                elif is_reposicao_section:
-                    natureza = NaturezaVerba.REPOSICAO
-                elif 'ATRASADO' in line_upper:
-                    natureza = NaturezaVerba.ATRASADO
+                # Check for section markers
+                if 'ATRASADO' in line_upper:
+                    is_atrasado_section = True
+                    is_reposicao_section = False
+                    continue
                 elif 'REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper:
-                    natureza = NaturezaVerba.REPOSICAO
+                    is_reposicao_section = True
+                    is_atrasado_section = False
+                    continue
+                elif 'TOTAL' in line_upper or 'LÍQUIDO' in line_upper:
+                    break
 
-                # Create Verba object
-                verba = Verba(
-                    codigo=codigo,
-                    denominacao=denominacao.strip(),
-                    natureza=natureza,
-                    quantidade=None,
-                    unidade=None,
-                    valor=valor,
-                    qualificadores_detectados=[],
-                )
+                # Skip empty lines and headers
+                if not line_stripped or 'CÓDIGO' in line_upper or 'DENOMINAÇÃO' in line_upper:
+                    continue
 
-                verbas.append(verba)
+                # Try to extract codigo at start of line
+                codigo_match = re.match(codigo_start_pattern, line_stripped)
+                if not codigo_match:
+                    continue
 
-            except (ValueError, AttributeError, IndexError):
-                # Skip lines that don't parse correctly
-                continue
+                # Try to extract valor at end of line
+                valor_match = re.search(valor_end_pattern, line_stripped)
+                if not valor_match:
+                    continue
+
+                # Extract denominacao from middle
+                codigo_raw = codigo_match.group(1)
+                valor_str = valor_match.group(1)
+
+                # Denominacao is everything between codigo and valor
+                codigo_end = codigo_match.end()
+                valor_start = valor_match.start()
+                denominacao = line_stripped[codigo_end:valor_start].strip()
+
+                try:
+                    # Normalize valor (handle both Brazilian 1.000,00 and American 1000.00 formats)
+                    # If there's a comma, it's Brazilian format: 1.000,00
+                    # If there's only dot and looks like American: 1000.00
+                    if ',' in valor_str:
+                        # Brazilian format: remove dots (thousands), replace comma with dot
+                        valor_normalized = valor_str.replace('.', '').replace(',', '.')
+                    elif valor_str.count('.') == 1 and valor_str.endswith(('.00', '.50', '.25', '.75')):
+                        # American format (ends with .00, .50, etc.)
+                        valor_normalized = valor_str
+                    else:
+                        # Default: assume Brazilian format
+                        valor_normalized = valor_str.replace('.', '').replace(',', '.')
+
+                    valor = float(valor_normalized)
+
+                    # Normalize código
+                    from src.core.normalizer import CodigoVerbaNotmalizer
+                    codigo = CodigoVerbaNotmalizer.normalize(codigo_raw)
+
+                    # Determine natureza
+                    natureza = NaturezaVerba.NORMAL
+                    if is_atrasado_section:
+                        natureza = NaturezaVerba.ATRASADO
+                    elif is_reposicao_section:
+                        natureza = NaturezaVerba.REPOSICAO
+                    elif 'ATRASADO' in line_upper:
+                        natureza = NaturezaVerba.ATRASADO
+                    elif 'REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper:
+                        natureza = NaturezaVerba.REPOSICAO
+
+                    # Create Verba object
+                    verba = Verba(
+                        codigo=codigo,
+                        denominacao=denominacao.strip(),
+                        natureza=natureza,
+                        quantidade=None,
+                        unidade=None,
+                        valor=valor,
+                        qualificadores_detectados=[],
+                    )
+
+                    verbas.append(verba)
+
+                except (ValueError, AttributeError, IndexError):
+                    # Skip lines that don't parse correctly
+                    continue
 
         return verbas
 
@@ -277,9 +277,6 @@ class DDPEParser(BaseParser):
         if not self.paginas:
             return (0.0, 0.0, 0.0)
 
-        texto = self.get_first_page_text()
-        lines = texto.split('\n')
-
         vencimentos = 0.0
         descontos = 0.0
         liquido = 0.0
@@ -291,25 +288,36 @@ class DDPEParser(BaseParser):
         descontos_pattern = rf'(?:TOTAL\s+)?DESCONTOS\s+({valor_regex})'
         liquido_pattern = rf'(?:LÍQUIDO|LIQUIDO)\s+({valor_regex})'
 
-        texto_upper = texto.upper()
+        # For multipage holerites, totals are usually on the last page
+        # Search from last page backwards
+        for page in reversed(self.paginas):
+            texto = page.texto
+            texto_upper = texto.upper()
 
-        # Extract vencimentos
-        match = re.search(vencimentos_pattern, texto_upper)
-        if match:
-            valor_str = match.group(1)
-            vencimentos = self._parse_valor(valor_str)
+            # Extract vencimentos
+            if vencimentos == 0.0:
+                match = re.search(vencimentos_pattern, texto_upper)
+                if match:
+                    valor_str = match.group(1)
+                    vencimentos = self._parse_valor(valor_str)
 
-        # Extract descontos
-        match = re.search(descontos_pattern, texto_upper)
-        if match:
-            valor_str = match.group(1)
-            descontos = self._parse_valor(valor_str)
+            # Extract descontos
+            if descontos == 0.0:
+                match = re.search(descontos_pattern, texto_upper)
+                if match:
+                    valor_str = match.group(1)
+                    descontos = self._parse_valor(valor_str)
 
-        # Extract liquido
-        match = re.search(liquido_pattern, texto_upper)
-        if match:
-            valor_str = match.group(1)
-            liquido = self._parse_valor(valor_str)
+            # Extract liquido
+            if liquido == 0.0:
+                match = re.search(liquido_pattern, texto_upper)
+                if match:
+                    valor_str = match.group(1)
+                    liquido = self._parse_valor(valor_str)
+
+            # If all three found, stop searching
+            if vencimentos > 0 and descontos >= 0 and liquido > 0:
+                break
 
         return (vencimentos, descontos, liquido)
 
