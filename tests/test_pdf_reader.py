@@ -125,8 +125,11 @@ class TestPDFReader:
         paginas = PDFReader.read_pdf(str(pdf_path))
 
         for pagina in paginas:
+            # Confidence should be in valid range
+            assert 0.0 <= pagina.confianca <= 1.0
+
             if pagina.metodo == "TEXTO":
-                # Text extraction should have high or medium confidence
-                assert pagina.confianca >= 0.5
+                # Text extraction confidence: high (0.95) or low (0.3)
+                assert pagina.confianca in [0.95, 0.3]
             elif pagina.metodo == "OCR":
                 assert pagina.confianca == PDFReader.CONFIANCA_OCR

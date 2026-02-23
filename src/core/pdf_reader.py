@@ -2,8 +2,9 @@
 PDF Reader with hybrid text/OCR extraction
 """
 import pdfplumber
+import pytesseract
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 
@@ -56,10 +57,16 @@ class PDFReader:
                         metodo = "TEXTO"
                         confianca = PDFReader.CONFIANCA_TEXTO
                     else:
-                        # Would use OCR here in Task 2
-                        # For now, mark as low confidence text
-                        metodo = "TEXTO"
-                        confianca = 0.5
+                        # Fallback to OCR if text extraction failed
+                        texto_ocr = PDFReader._apply_ocr(page)
+                        if texto_ocr:
+                            texto = texto_ocr
+                            metodo = "OCR"
+                            confianca = PDFReader.CONFIANCA_OCR
+                        else:
+                            # OCR also failed
+                            metodo = "TEXTO"
+                            confianca = 0.3
 
                     pagina = PaginaExtraida(
                         numero=i,
@@ -97,6 +104,37 @@ class PDFReader:
             return texto_limpo
         except Exception:
             return ""
+
+    @staticmethod
+    def _apply_ocr(page) -> Optional[str]:
+        """
+        Extract text using Tesseract OCR
+
+        Args:
+            page: pdfplumber page object
+
+        Returns:
+            Extracted text or None if OCR fails
+        """
+        try:
+            # Convert page to image
+            image = PDFReader.get_page_image(page)
+            if image is None:
+                return None
+
+            # Run OCR on image
+            texto = pytesseract.image_to_string(image)
+            if not texto or len(texto.strip()) == 0:
+                return None
+
+            # Clean up whitespace
+            lines = [line.strip() for line in texto.split("\n")]
+            texto_limpo = "\n".join(line for line in lines if line)
+
+            return texto_limpo if texto_limpo else None
+
+        except Exception:
+            return None
 
     @staticmethod
     def get_page_image(page):
