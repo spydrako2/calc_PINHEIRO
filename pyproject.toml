@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holeritepro"
+version = "0.1.0"
+description = "Automated holerite extraction and calculation for legal proceedings"
+requires-python = ">=3.11"
+
+dependencies = [
+    "pdfplumber>=0.10.0",
+    "pytesseract>=0.3.10",
+    "openpyxl>=3.0.0",
+    "customtkinter>=5.2.0",
+    "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "--cov=src --cov-report=html --cov-report=term-missing"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.flake8]
+max-line-length = 100
+exclude = [".git", "__pycache__", "venv"]

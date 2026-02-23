@@ -1,0 +1,13 @@
+pyproject.toml
+src/__init__.py
+src/__main__.py
+src/core/__init__.py
+src/core/data_model.py
+src/core/normalizer.py
+src/holeritepro.egg-info/PKG-INFO
+src/holeritepro.egg-info/SOURCES.txt
+src/holeritepro.egg-info/dependency_links.txt
+src/holeritepro.egg-info/requires.txt
+src/holeritepro.egg-info/top_level.txt
+tests/test_data_model.py
+tests/test_normalizer.py
