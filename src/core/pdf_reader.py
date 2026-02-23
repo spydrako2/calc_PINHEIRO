@@ -155,6 +155,48 @@ class PDFReader:
             return None
 
     @staticmethod
+    def is_continuation_page(texto: str) -> bool:
+        """
+        Detect if page is continuation of previous holerite (page 2+)
+
+        Heuristics:
+        - Cabeçalho vazio (no common header fields)
+        - Tabela de verbas presente (códigos numéricos + valores)
+
+        Args:
+            texto: Extracted text from page
+
+        Returns:
+            True if page appears to be continuation, False otherwise
+        """
+        if not texto or len(texto.strip()) < 20:
+            return False
+
+        # Check for header indicators (if present, not continuation)
+        header_indicators = [
+            "CPF",
+            "COMPETÊNCIA",
+            "COMPETENCIA",
+            "NOME:",
+            "HOLERITE",
+            "FOLHA",
+        ]
+
+        has_header = any(indicator.lower() in texto.lower() for indicator in header_indicators)
+
+        # Check for verba table indicators
+        # Lines with patterns like "XX.XXX" or "XXXXXX" followed by numbers
+        has_verba_table = any(
+            pattern in texto.lower()
+            for pattern in ["código", "codigo", "verba", "denominação", "denominacao"]
+        )
+
+        # Continuation: has verba table but no header
+        is_continuation = has_verba_table and not has_header
+
+        return is_continuation
+
+    @staticmethod
     def extrair_metadados_basicos(pdf_path: str) -> Dict[str, Any]:
         """
         Extract basic metadata from PDF
