@@ -48,7 +48,8 @@ class SpprevPensionistaParser(BaseParser):
         """
         Detect if text belongs to SPPREV Pensionista template
 
-        Requires at least 2 keywords including PENSÃO indicator
+        PENSÃO keyword is MANDATORY to differentiate from SPPREV Aposentado.
+        Also requires at least one SPPREV identifier (SPPREV or DEMONSTRATIVO).
 
         Args:
             texto: Extracted text from page
@@ -58,14 +59,20 @@ class SpprevPensionistaParser(BaseParser):
         """
         texto_upper = texto.upper()
 
-        # Check for SPPREV keywords
-        matches = 0
-        for pattern in self.SPPREV_PENSIONISTA_KEYWORDS:
-            if re.search(pattern, texto_upper, re.IGNORECASE):
-                matches += 1
+        # PENSÃO is mandatory — without it, this is NOT a Pensionista document
+        has_pensao = bool(re.search(r"PENS[ÃA]O", texto_upper))
+        if not has_pensao:
+            return False
 
-        # SPPREV Pensionista requires at least 2 keywords (SPPREV + PENSÃO)
-        return matches >= 2
+        # Also need at least one SPPREV indicator
+        has_spprev = bool(re.search(
+            r"S\s*[ÃA]\s*O\s+PAULO\s+PREVID|SPPREV", texto_upper
+        ))
+        has_demonstrativo = bool(re.search(
+            r"DEMONSTRATIVO\s+DE\s+PAGAMENTO", texto_upper
+        ))
+
+        return has_spprev or has_demonstrativo
 
     def parse(self, paginas: List[PaginaExtraida]) -> Holerite:
         """
@@ -195,12 +202,19 @@ class SpprevPensionistaParser(BaseParser):
         )
         tipo_folha_str = tipo_folha_match.group(1).strip() if tipo_folha_match else None
 
-        # Competência
+        # Competência — may be on same line or next line after label
         competencia_match = re.search(
-            r"COMPET[A-Z]*\s+(\d{1,2}[/\-]\d{4})",
+            r"Compet[^\n]*?\s+(\d{1,2}[/\-]\d{4})",
             texto,
             re.IGNORECASE,
         )
+        if not competencia_match:
+            # Cross-line: "Competência\n... 12/2024"
+            competencia_match = re.search(
+                r"Compet[^\n]*\n[^\n]*?(\d{1,2}[/\-]\d{4})",
+                texto,
+                re.IGNORECASE,
+            )
         competencia = None
         if competencia_match:
             competencia = self._normalize_date(competencia_match.group(1), "AAAA-MM")
@@ -270,12 +284,12 @@ class SpprevPensionistaParser(BaseParser):
                 line_upper = line.upper()
                 line_stripped = line.strip()
 
-                # Detect section start
-                if "BASE" in line_upper and "CALCULO" in line_upper:
+                # Detect section start (handle both CALCULO and CÁLCULO)
+                if "BASE" in line_upper and ("CALCULO" in line_upper or "CÁLCULO" in line_upper):
                     in_base_calculo = True
                     in_demonstrativo = False
                     continue
-                elif "DEMONSTRATIVO" in line_upper and "PAGAMENTO" in line_upper:
+                elif "DEMONSTRATIVO" in line_upper and ("PAGAMENTO" in line_upper or "BENEFÍCIO" in line_upper or "BENEFICIO" in line_upper):
                     in_base_calculo = False
                     in_demonstrativo = True
                     continue
@@ -309,8 +323,8 @@ class SpprevPensionistaParser(BaseParser):
                     # Get rest of line after código
                     rest_of_line = line_stripped[codigo_match.end() :].strip()
 
-                    # Extract monetary value at end
-                    valor_pattern = r"([-]?\d+[.,]\d{2})\s*$"
+                    # Extract monetary value at end (handles Brazilian and American formats)
+                    valor_pattern = r"([-]?[\d.,]+)\s*$"
                     valor_match = re.search(valor_pattern, rest_of_line)
 
                     if not valor_match:
@@ -318,21 +332,24 @@ class SpprevPensionistaParser(BaseParser):
 
                     valor_str = valor_match.group(1)
 
-                    # Get denominação
+                    # Get denominação section (everything between código and valor)
                     denominacao_section = rest_of_line[: valor_match.start()].strip()
 
-                    # Check for -C (Crédito) or -D (Débito) marker in denominação (Demonstrativo only)
+                    # Check for -C (Crédito) or -D (Débito) marker
+                    # In DEMONSTRATIVO, format is: "DENOMINAÇÃO-C PERÍODO" or "DENOMINAÇÃO-D PERÍODO"
                     natureza = NaturezaVerba.NORMAL
-                    if in_demonstrativo:
-                        if denominacao_section.endswith("-C"):
+                    denominacao = denominacao_section
+
+                    # Search for -C or -D marker anywhere in the denominação section
+                    marker_match = re.search(r"(.+?)-([CD])\b", denominacao_section)
+                    if marker_match and in_demonstrativo:
+                        denominacao = marker_match.group(1).strip()
+                        marker = marker_match.group(2)
+                        if marker == "C":
                             natureza = NaturezaVerba.CREDITO
-                            denominacao = denominacao_section[:-2].strip()
-                        elif denominacao_section.endswith("-D"):
+                        elif marker == "D":
                             natureza = NaturezaVerba.DEBITO
-                            denominacao = denominacao_section[:-2].strip()
-                        else:
-                            denominacao = denominacao_section.strip()
-                    else:
+                    elif not in_demonstrativo:
                         denominacao = denominacao_section.strip()
 
                     # Parse valor
@@ -358,64 +375,76 @@ class SpprevPensionistaParser(BaseParser):
 
     def _extract_totals(self) -> tuple:
         """
-        Extract totals from both sections
+        Extract totals from the DEMONSTRATIVO section (payment statement).
 
-        SPPREV Pensionista has multiple total lines:
-        - BASE DE CÁLCULO: Total Vencimentos, Total Descontos, Base p/ Cálculo
-        - DEMONSTRATIVO: Total Vencimentos, Total Descontos, Líquido a Receber
+        Handles two formats:
+        1. Same-line: "Total Vencimentos 5.604,34"
+        2. Two-line (header + values):
+           Total Vencimentos Total Descontos Líquido a Receber
+           5.604,34 173,61 5.430,73
 
-        We return the values from the DEMONSTRATIVO section (payment statement)
-        as those are the final amounts for the employee.
+        Returns the LAST matching totals line (from DEMONSTRATIVO, not BASE DE CÁLCULO).
 
         Returns:
-            Tuple of (vencimentos, descontos, liquido) from DEMONSTRATIVO section
+            Tuple of (vencimentos, descontos, liquido)
         """
         if not self.paginas:
             return (0.0, 0.0, 0.0)
 
-        vencimentos = 0.0
-        descontos = 0.0
-        liquido = 0.0
-
-        # Pattern to find total lines
-        # Look for DEMONSTRATIVO section totals specifically
-        valor_regex = r"[-]?[\d.,]+"
+        # Collect all totals-header matches; use the last one (DEMONSTRATIVO section)
+        last_totals = None
 
         for page in reversed(self.paginas):
             texto = page.texto
-            texto_upper = texto.upper()
+            lines = texto.split("\n")
 
-            # Find DEMONSTRATIVO section
-            if "DEMONSTRATIVO" in texto_upper:
-                # Extract totals after DEMONSTRATIVO marker
-                demonst_section = texto_upper[texto_upper.find("DEMONSTRATIVO") :]
+            for i, line in enumerate(lines):
+                line_upper = line.upper().strip()
 
-                # Total Vencimentos
-                vencimentos_pattern = rf"(?:TOTAL\s+)?VENCIMENTOS?\s*({valor_regex})"
-                vencimentos_match = re.search(vencimentos_pattern, demonst_section)
-                if vencimentos_match and vencimentos == 0.0:
-                    valor_str = vencimentos_match.group(1)
-                    vencimentos = self._parse_valor(valor_str)
+                # Find totals header line: "Total Vencimentos Total Descontos Líquido..."
+                if ("VENCIMENTO" in line_upper and "DESCONTO" in line_upper
+                        and ("QUIDO" in line_upper or "LIQUIDO" in line_upper)):
+                    # Read next non-empty line for values
+                    for j in range(i + 1, min(i + 3, len(lines))):
+                        next_line = lines[j].strip()
+                        if not next_line:
+                            continue
+                        valores = re.findall(r"[-]?[\d.,]+", next_line)
+                        if len(valores) >= 3:
+                            vencimentos = self._parse_valor(valores[-3])
+                            descontos = self._parse_valor(valores[-2])
+                            liquido = self._parse_valor(valores[-1])
+                            last_totals = (vencimentos, descontos, liquido)
+                        break
 
-                # Total Descontos
-                descontos_pattern = rf"(?:TOTAL\s+)?(?:DE\s+)?DESCONTOS?\s*({valor_regex})"
-                descontos_match = re.search(descontos_pattern, demonst_section)
-                if descontos_match and descontos == 0.0:
-                    valor_str = descontos_match.group(1)
-                    descontos = self._parse_valor(valor_str)
+            if last_totals:
+                return last_totals
 
-                # Líquido (L[ÍI]QUIDO or "Líquido a Receber")
-                liquido_pattern = rf"(?:L[ÍI]QUIDO|L[ÍI]QUIDO\s+[A-Z]+\s+[A-Z]+)\s*({valor_regex})"
-                liquido_match = re.search(liquido_pattern, demonst_section)
-                if liquido_match and liquido == 0.0:
-                    valor_str = liquido_match.group(1)
-                    liquido = self._parse_valor(valor_str)
+        # Fallback: single-line pattern search
+        for page in reversed(self.paginas):
+            texto = page.texto
+            lines = texto.split("\n")
+            vencimentos = 0.0
+            descontos = 0.0
+            liquido = 0.0
+            valor_regex = r"([-]?[\d.,]+)"
 
-                # If all three found, we're done
-                if vencimentos > 0 and descontos >= 0 and liquido > 0:
-                    break
+            for line in lines:
+                line_upper = line.upper().strip()
+                match = re.search(rf"(?:TOTAL\s+)?(?:VENCIMENTOS?|VENCTOS?)\s+{valor_regex}", line_upper)
+                if match and vencimentos == 0.0:
+                    vencimentos = self._parse_valor(match.group(1))
+                match = re.search(rf"(?:TOTAL\s+)?(?:DE\s+)?DESCONTOS?\s+{valor_regex}", line_upper)
+                if match and descontos == 0.0:
+                    descontos = self._parse_valor(match.group(1))
+                match = re.search(rf"L[ÍI]QUIDO[^\d]*{valor_regex}", line_upper)
+                if match and liquido == 0.0:
+                    liquido = self._parse_valor(match.group(1))
 
-        return (vencimentos, descontos, liquido)
+            if vencimentos > 0 or liquido > 0:
+                return (vencimentos, descontos, liquido)
+
+        return (0.0, 0.0, 0.0)
 
     def _normalize_date(self, date_str: str, target_format: str) -> str:
         """
@@ -445,8 +474,8 @@ class SpprevPensionistaParser(BaseParser):
         """
         Parse monetary value handling both Brazilian and American formats
 
-        Args:
-            valor_str: Value string like "5000.00", "5.000,00", etc.
+        Brazilian: 1.000,00 (dot=thousands, comma=decimal)
+        American: 1000.00 (dot=decimal)
 
         Returns:
             Float value
@@ -458,16 +487,20 @@ class SpprevPensionistaParser(BaseParser):
 
         try:
             if "," in valor_str:
-                # Brazilian format: 1.000,00
+                # Brazilian format: remove dots (thousands), replace comma with dot
                 valor_normalized = valor_str.replace(".", "").replace(",", ".")
-            elif valor_str.count(".") == 1 and any(
-                valor_str.endswith(x) for x in [".00", ".50", ".25", ".75"]
-            ):
-                # American format: 1000.00
-                valor_normalized = valor_str
+            elif "." in valor_str:
+                # Dot present, no comma — determine if decimal or thousands
+                parts = valor_str.rsplit(".", 1)
+                if len(parts) == 2 and len(parts[1]) <= 2:
+                    # 1-2 digits after dot = decimal separator (American)
+                    valor_normalized = valor_str
+                else:
+                    # 3+ digits after dot = thousands separator (Brazilian without decimal)
+                    valor_normalized = valor_str.replace(".", "")
             else:
-                # Default: Brazilian format
-                valor_normalized = valor_str.replace(".", "").replace(",", ".")
+                # No separator — integer
+                valor_normalized = valor_str
 
             return float(valor_normalized)
         except (ValueError, AttributeError):

@@ -14,6 +14,8 @@ class NaturezaVerba(Enum):
     REPOSICAO = "R"
     DEVOLUCAO = "D"
     ESTORNO = "E"
+    CREDITO = "C"    # SPPREV Pensionista -C marker
+    DEBITO = "DB"    # SPPREV Pensionista -D marker
 
 
 class TipoFolha(Enum):

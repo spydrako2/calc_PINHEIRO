@@ -296,10 +296,6 @@ class SpprevAposentadoParser(BaseParser):
                 if not line_stripped or "CÓDIGO" in line_upper:
                     continue
 
-                # Stop at totals section
-                if "TOTAL" in line_upper or "BASE" in line_upper:
-                    continue
-
                 # Try to extract código at start of line
                 codigo_match = re.match(codigo_pattern, line_stripped)
                 if not codigo_match:
@@ -312,8 +308,8 @@ class SpprevAposentadoParser(BaseParser):
                     rest_of_line = line_stripped[codigo_match.end() :].strip()
 
                     # Find monetary value at end (vencimento)
-                    # Pattern: last number with comma or dot for decimals
-                    valor_pattern = r"([-]?\d+[.,]\d{2})\s*$"
+                    # Pattern: captures Brazilian (2.685,68) and American (5604.34) formats
+                    valor_pattern = r"([-]?[\d.,]+)\s*$"
                     valor_match = re.search(valor_pattern, rest_of_line)
 
                     if not valor_match:
@@ -375,69 +371,66 @@ class SpprevAposentadoParser(BaseParser):
         """
         Extract totals (vencimentos, descontos, líquido)
 
-        SPPREV Aposentado includes additional totals:
-        - BASE IR
-        - BASE REDUTOR
-        - BASE CONTRIB PREV
-        - TOTAL VENCIMENTOS
-        - TOTAL DESCONTOS
-        - TOTAL LÍQUIDO
-
-        Example:
-        BASE IR BASE REDUTOR BASE CONTRIB PREV TOTAL VENCTOS TOTAL DE DESCONTOS TOTAL LÍQUIDO
-        8.371,81 0,00 8.979,01 8.979,01 2.795,51 6.183,50
+        Handles two formats:
+        1. Same-line: "TOTAL VENCIMENTOS 8.979,01"
+        2. Two-line (SPPREV layout):
+           BASE IR BASE REDUTOR BASE CONTRIB PREV TOTAL VENCTOS TOTAL DE DESCONTOS TOTAL LÍQUIDO
+           8.371,81 0,00 8.979,01 8.979,01 2.795,51 6.183,50
+           (last 3 values = vencimentos, descontos, líquido)
 
         Returns:
             Tuple of (vencimentos, descontos, liquido)
-
-        Raises:
-            No exceptions - returns (0.0, 0.0, 0.0) if not found
         """
         if not self.paginas:
             return (0.0, 0.0, 0.0)
 
-        vencimentos = 0.0
-        descontos = 0.0
-        liquido = 0.0
-
-        # Patterns to find total lines
-        valor_regex = r"[-]?[\d.,]+"
-        vencimentos_pattern = rf"(?:TOTAL\s+)?VENCTOS?(?:\.)?(?:\s+|)\s*({valor_regex})"
-        descontos_pattern = rf"(?:TOTAL\s+)?(?:DE\s+)?DESCONTOS?\s+({valor_regex})"
-        liquido_pattern = rf"(?:TOTAL\s+)?L[ÍI]QUIDO(?:\s+[A-Z]+)*\s+({valor_regex})"
-
-        # For multipage holerites, totals are usually on the last page
         # Search from last page backwards
         for page in reversed(self.paginas):
             texto = page.texto
-            texto_upper = texto.upper()
+            lines = texto.split("\n")
 
-            # Extract vencimentos
-            if vencimentos == 0.0:
-                match = re.search(vencimentos_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    vencimentos = self._parse_valor(valor_str)
+            for i, line in enumerate(lines):
+                line_upper = line.upper().strip()
 
-            # Extract descontos
-            if descontos == 0.0:
-                match = re.search(descontos_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    descontos = self._parse_valor(valor_str)
+                # Detect the totals header line (two-line format)
+                if ("VENCTO" in line_upper and "DESCONTO" in line_upper
+                        and ("QUIDO" in line_upper or "LIQUIDO" in line_upper)):
+                    # Read the next non-empty line for values
+                    for j in range(i + 1, min(i + 3, len(lines))):
+                        next_line = lines[j].strip()
+                        if not next_line:
+                            continue
+                        # Extract all monetary values from the values line
+                        valores = re.findall(r"[-]?[\d.,]+", next_line)
+                        if len(valores) >= 3:
+                            # Last 3 values = vencimentos, descontos, líquido
+                            vencimentos = self._parse_valor(valores[-3])
+                            descontos = self._parse_valor(valores[-2])
+                            liquido = self._parse_valor(valores[-1])
+                            return (vencimentos, descontos, liquido)
 
-            # Extract liquido
-            if liquido == 0.0:
-                match = re.search(liquido_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    liquido = self._parse_valor(valor_str)
+            # Fallback: single-line format "TOTAL VENCIMENTOS 5.000,00"
+            vencimentos = 0.0
+            descontos = 0.0
+            liquido = 0.0
+            valor_regex = r"([-]?[\d.,]+)"
 
-            # If all three found, stop searching
-            if vencimentos > 0 and descontos >= 0 and liquido > 0:
-                break
+            for line in lines:
+                line_upper = line.upper().strip()
+                match = re.search(rf"TOTAL\s+(?:VENCIMENTOS?|VENCTOS?)\s+{valor_regex}", line_upper)
+                if match and vencimentos == 0.0:
+                    vencimentos = self._parse_valor(match.group(1))
+                match = re.search(rf"TOTAL\s+(?:DE\s+)?DESCONTOS?\s+{valor_regex}", line_upper)
+                if match and descontos == 0.0:
+                    descontos = self._parse_valor(match.group(1))
+                match = re.search(rf"TOTAL\s+L[ÍI]QUIDO\s+{valor_regex}", line_upper)
+                if match and liquido == 0.0:
+                    liquido = self._parse_valor(match.group(1))
 
-        return (vencimentos, descontos, liquido)
+            if vencimentos > 0 or liquido > 0:
+                return (vencimentos, descontos, liquido)
+
+        return (0.0, 0.0, 0.0)
 
     def _extract_field(self, texto: str, field_name: str) -> Optional[str]:
         """
@@ -494,8 +487,8 @@ class SpprevAposentadoParser(BaseParser):
         """
         Parse monetary value handling both Brazilian and American formats
 
-        Args:
-            valor_str: Value string in format like "5000.00", "5.000,00", ".50", etc.
+        Brazilian: 1.000,00 (dot=thousands, comma=decimal)
+        American: 1000.00 (dot=decimal)
 
         Returns:
             Float value
@@ -506,19 +499,21 @@ class SpprevAposentadoParser(BaseParser):
         valor_str = valor_str.strip()
 
         try:
-            # Determine format and parse accordingly
             if "," in valor_str:
-                # Brazilian format: 1.000,00
-                # Remove dots (thousands separator), replace comma with dot
+                # Brazilian format: remove dots (thousands), replace comma with dot
                 valor_normalized = valor_str.replace(".", "").replace(",", ".")
-            elif valor_str.count(".") == 1 and any(
-                valor_str.endswith(x) for x in [".00", ".50", ".25", ".75"]
-            ):
-                # American format: 1000.00
-                valor_normalized = valor_str
+            elif "." in valor_str:
+                # Dot present, no comma — determine if decimal or thousands
+                parts = valor_str.rsplit(".", 1)
+                if len(parts) == 2 and len(parts[1]) <= 2:
+                    # 1-2 digits after dot = decimal separator (American)
+                    valor_normalized = valor_str
+                else:
+                    # 3+ digits after dot = thousands separator (Brazilian without decimal)
+                    valor_normalized = valor_str.replace(".", "")
             else:
-                # Default: assume Brazilian format
-                valor_normalized = valor_str.replace(".", "").replace(",", ".")
+                # No separator — integer
+                valor_normalized = valor_str
 
             return float(valor_normalized)
         except (ValueError, AttributeError):
