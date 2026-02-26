@@ -3,9 +3,16 @@ HoleritePRO — Interface Streamlit
 Branding: Pinheiro Advocacia
 """
 
+import sys
 import tempfile
-import streamlit as st
 from pathlib import Path
+
+# Garantir que a raiz do projeto está no sys.path (necessário no Streamlit Cloud)
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import streamlit as st
 
 from src.teses import TESES_DISPONIVEIS
 from src.export.xlsx_writer import write_reflexo_xlsx
