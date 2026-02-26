@@ -1,75 +1,79 @@
 """CLI entry point for HoleritePRO"""
 
 import sys
+import argparse
 from pathlib import Path
 
-# Quick test of basic functionality
+
+def cmd_process(args):
+    """Process PDFs through the pipeline."""
+    from src.core.pipeline import Pipeline, pipeline_to_json
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print(f"Error: {input_path} does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    # Collect PDF files
+    if input_path.is_dir():
+        pdf_paths = sorted(str(p) for p in input_path.glob("*.pdf"))
+    else:
+        pdf_paths = [str(input_path)]
+
+    if not pdf_paths:
+        print(f"No PDF files found in {input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Processing {len(pdf_paths)} PDF(s)...")
+
+    pipeline = Pipeline()
+    result = pipeline.process_pdfs(pdf_paths)
+
+    # Output
+    json_output = pipeline_to_json(result)
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.write_text(json_output, encoding="utf-8")
+        print(f"Output written to {output_path}")
+    else:
+        print(json_output)
+
+    # Summary
+    r = result.relatorio
+    print(f"\n--- Summary ---", file=sys.stderr)
+    print(f"PDFs: {r.get('total_pdfs', 0)}", file=sys.stderr)
+    print(f"Holerites: {r.get('total_holerites', 0)}", file=sys.stderr)
+    print(f"Verbas: {r.get('total_verbas', 0)}", file=sys.stderr)
+    print(f"CPFs: {r.get('cpfs_unicos', 0)}", file=sys.stderr)
+    print(f"Errors: {r.get('erros_count', 0)}", file=sys.stderr)
+
+    if result.erros:
+        for e in result.erros:
+            print(f"  ! {e}", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="holeritepro",
+        description="HoleritePRO — Payslip PDF processing engine",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    # process command
+    proc = subparsers.add_parser("process", help="Process PDF files")
+    proc.add_argument("--input", "-i", required=True, help="PDF file or directory")
+    proc.add_argument("--output", "-o", help="Output JSON file (default: stdout)")
+    proc.set_defaults(func=cmd_process)
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    args.func(args)
+
+
 if __name__ == "__main__":
-    from src.core import (
-        Holerite,
-        CabecalhoHolerite,
-        Verba,
-        NaturezaVerba,
-        TemplateType,
-        CodigoVerbaNotmalizer,
-        AlocacaoTemporal,
-    )
-
-    print("[OK] HoleritePRO v0.1.0 - Core Engine")
-    print()
-
-    # Test 1: Create a holerite
-    print("[TEST 1] Creating holerite...")
-    cab = CabecalhoHolerite(
-        nome="LUCIANO BASTOS DE SOUZA",
-        cpf="123.456.789-00",
-        competencia="2021-03",
-        template_type=TemplateType.DDPE,
-    )
-
-    hol = Holerite(cabecalho=cab)
-    hol.add_verba(
-        Verba(
-            codigo="70.006",
-            denominacao="IAMSPE",
-            natureza=NaturezaVerba.NORMAL,
-            valor=1000.0,
-        )
-    )
-    hol.add_verba(
-        Verba(
-            codigo="70.007",
-            denominacao="IAMSPE ADICIONAL",
-            natureza=NaturezaVerba.NORMAL,
-            valor=500.0,
-        )
-    )
-    hol.calcula_totais()
-    print(f"  Nome: {hol.cabecalho.nome}")
-    print(f"  CPF: {hol.cabecalho.cpf}")
-    print(f"  Competencia: {hol.cabecalho.competencia}")
-    print(f"  Verbas: {len(hol.verbas)}")
-    print(f"  Total Vencimentos: R$ {hol.total_vencimentos:.2f}")
-    print(f"  Total Descontos: R$ {hol.total_descontos:.2f}")
-    print(f"  Liquido: R$ {hol.liquido:.2f}")
-    print()
-
-    # Test 2: Normalize codes
-    print("[TEST 2] Code normalization...")
-    codigo_ddpe = "70.006"
-    codigo_norm = CodigoVerbaNotmalizer.normalize(codigo_ddpe)
-    codigo_display = CodigoVerbaNotmalizer.to_display_format(codigo_norm)
-    print(f"  {codigo_ddpe} -> {codigo_norm} -> {codigo_display}")
-    print()
-
-    # Test 3: Temporal allocation
-    print("[TEST 3] Temporal allocation...")
-    mes_alocacao = AlocacaoTemporal.get_mes_alocacao("2021-03", "A")
-    print(f"  Atrasado de MAR/2021 -> {mes_alocacao}")
-
-    inicio, fim = AlocacaoTemporal.get_periodo_padrao(5)
-    print(f"  Periodo padrao (5 anos): {inicio} a {fim}")
-    print()
-
-    print("[SUCCESS] Core Engine Setup Complete!")
-    print("  Ready for PDF reader and parsers...")
+    main()

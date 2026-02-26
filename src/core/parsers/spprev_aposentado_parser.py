@@ -98,7 +98,8 @@ class SpprevAposentadoParser(BaseParser):
         # Extract from pages
         cabecalho = self._extract_cabecalho()
         verbas = self._extract_verbas()
-        vencimentos, descontos, liquido = self._extract_totals()
+        totals = self._extract_totals()
+        vencimentos, descontos, liquido = totals[0], totals[1], totals[2]
 
         # Create holerite
         holerite = Holerite(
@@ -111,6 +112,12 @@ class SpprevAposentadoParser(BaseParser):
             metodo_extracao=paginas[0].metodo if paginas else "TEXTO",
             confianca=paginas[0].confianca if paginas else 0.95,
         )
+
+        # Set base totals if available (from two-line format)
+        if len(totals) > 3:
+            holerite.base_ir = totals[3]
+            holerite.base_redutor = totals[4]
+            holerite.base_contrib_prev = totals[5]
 
         # Validate extracted data
         self._validate_holerite(holerite)
@@ -249,142 +256,218 @@ class SpprevAposentadoParser(BaseParser):
             nome=nome.strip(),
             cpf=cpf.strip(),
             cargo=cargo.strip() if cargo else None,
-            unidade=entidade.strip() if entidade else None,  # Use entidade as unidade
+            unidade=entidade.strip() if entidade else None,
             competencia=competencia or "",
             tipo_folha=tipo_folha,
             template_type=TemplateType.SPPREV_APOSENTADO,
+            entidade=entidade.strip() if entidade else None,
+            numero_beneficio=beneficio,
+            percentual_aposentadoria=percentual,
+            banco=banco,
+            agencia=agencia,
+            conta=conta,
+            nivel=nivel,
         )
 
         self.extracted_cabecalho = cabecalho
         return cabecalho
 
+    # NAT letter to NaturezaVerba mapping for SPPREV
+    NAT_MAP = {
+        "N": NaturezaVerba.NORMAL,
+        "A": NaturezaVerba.ATRASADO,
+        "R": NaturezaVerba.REPOSICAO,
+        "C": NaturezaVerba.CREDITO,
+        "D": NaturezaVerba.DEBITO,
+    }
+
     def _extract_verbas(self) -> List[Verba]:
         """
-        Extract earnings/deductions (verbas) from all pages
+        Extract earnings/deductions (verbas) from all pages.
 
-        SPPREV Aposentado verba format:
-        Código (XXXXXX), Denominação, NAT, QTD, Unidade, Período, Vencimento, Descontos
+        SPPREV Aposentado format:
+        Código  Denominação  NAT  QTD  Unidade  Período  Vencimento  Descontos
 
-        Example line:
+        Example lines:
         001001 SALARIO BASE N 11/2025 2.685,68
-        070012 IMPOSTO DE RENDA N 11/2025 1.393,52 (in Descontos column)
+        009001 ADIC TEMPO SERVICO N 5 11/2025 1.342,84
+        070012 IMPOSTO DE RENDA N 11/2025                   1.393,52
+
+        Descontos are detected by position (two-value lines) and stored as negative.
 
         Returns:
             List of Verba objects
-
-        Raises:
-            No exceptions raised - errors logged as skipped lines
         """
         if not self.paginas:
             return []
 
         verbas = []
+        codigo_pattern = re.compile(r"^(\d{6})\s+")
 
-        # Regex pattern for SPPREV: 6-digit código at start of line
-        codigo_pattern = r"^(\d{6})\s+"
-
-        # Extract from all pages
         for page in self.paginas:
-            texto = page.texto
-            lines = texto.split("\n")
+            lines = page.texto.split("\n")
 
-            for i, line in enumerate(lines):
+            for line in lines:
                 line_upper = line.upper()
                 line_stripped = line.strip()
 
-                # Skip empty lines or headers
-                if not line_stripped or "CÓDIGO" in line_upper:
+                if not line_stripped or "CÓDIGO" in line_upper or "DENOMINAÇ" in line_upper:
+                    continue
+                if "TOTAL" in line_upper or "LÍQUIDO" in line_upper or "BASE IR" in line_upper:
                     continue
 
-                # Try to extract código at start of line
-                codigo_match = re.match(codigo_pattern, line_stripped)
+                codigo_match = codigo_pattern.match(line_stripped)
                 if not codigo_match:
                     continue
 
                 try:
                     codigo_raw = codigo_match.group(1)
+                    rest = line_stripped[codigo_match.end():].strip()
 
-                    # Extract the rest of the line after codigo
-                    rest_of_line = line_stripped[codigo_match.end() :].strip()
+                    # Extract all monetary values from the line
+                    # Brazilian format: 2.685,68 or 1.393,52
+                    monetary_values = re.findall(r'(\d[\d.]*,\d{2})', rest)
 
-                    # Find monetary value at end (vencimento)
-                    # Pattern: captures Brazilian (2.685,68) and American (5604.34) formats
-                    valor_pattern = r"([-]?[\d.,]+)\s*$"
-                    valor_match = re.search(valor_pattern, rest_of_line)
-
-                    if not valor_match:
+                    if not monetary_values:
+                        # Try simple number format
+                        monetary_values = re.findall(r'(\d+\.\d{2})', rest)
+                    if not monetary_values:
                         continue
 
-                    valor_str = valor_match.group(1)
-
-                    # Get denominação: everything before the NAT indicator
-                    # Look for NAT pattern (usually single letter N, C, D after denominação)
-                    # More robustly: get everything before the last monetary value
-                    denominacao_section = rest_of_line[: valor_match.start()].strip()
-
-                    # Extract NAT from denominação section
-                    # NAT is usually a single letter
-                    # Search backwards from the end for single letter markers
-                    nat_pattern = r"\s+([NCD])\s+"
-                    nat_match = re.search(nat_pattern, denominacao_section)
-
-                    if nat_match:
-                        natureza_str = nat_match.group(1).upper()
-                        # Denominação is everything before NAT
-                        denom_end = nat_match.start()
-                        denominacao = denominacao_section[:denom_end].strip()
+                    # Determine if this is a desconto line (two values = vencimento + desconto)
+                    # or single value line
+                    is_desconto = False
+                    if len(monetary_values) >= 2:
+                        # Two values: first is vencimento (may be empty), second is desconto
+                        # If first value appears early and second late, second is desconto
+                        # Simplified: use the LAST value; if the position is far right, it's desconto
+                        val_str = monetary_values[-1]
+                        # Check if last value position is in the "descontos" column area
+                        last_val_pos = rest.rfind(val_str)
+                        first_val_pos = rest.find(monetary_values[0])
+                        if last_val_pos > first_val_pos + len(monetary_values[0]) + 3:
+                            is_desconto = True
+                            val_str = monetary_values[-1]
+                        else:
+                            val_str = monetary_values[0]
                     else:
-                        # No NAT found, default to N (NORMAL)
-                        natureza_str = "N"
-                        denominacao = denominacao_section.strip()
+                        val_str = monetary_values[0]
+                        # Single value: check position to determine vencimento vs desconto
+                        # If the value starts past midpoint of original line, likely desconto
+                        val_pos = line.rfind(val_str)
+                        line_len = len(line)
+                        if line_len > 0 and val_pos > line_len * 0.65:
+                            is_desconto = True
 
-                    # Map NAT to natureza
-                    natureza = NaturezaVerba.NORMAL
-                    if natureza_str == "C":
-                        natureza = NaturezaVerba.CREDITO
-                    elif natureza_str == "D":
-                        natureza = NaturezaVerba.DEBITO
+                    valor = self._parse_valor(val_str)
+                    if is_desconto:
+                        valor = -abs(valor)
 
-                    # Parse valor
-                    valor = self._parse_valor(valor_str)
+                    # Strip monetary values from rest to parse middle fields
+                    middle = rest
+                    for mv in monetary_values:
+                        middle = middle.replace(mv, '', 1)
+                    middle = middle.strip()
 
-                    # Create Verba object
+                    # Parse middle: DENOM [NAT] [QTD] [PERIODO]
+                    parsed = self._parse_spprev_middle(middle)
+
                     verba = Verba(
                         codigo=codigo_raw,
-                        denominacao=denominacao.strip() if denominacao else "UNKNOWN",
-                        natureza=natureza,
-                        quantidade=None,
-                        unidade=None,
+                        denominacao=parsed['denominacao'] or "UNKNOWN",
+                        natureza=parsed['natureza'],
+                        quantidade=parsed['quantidade'],
+                        unidade=parsed['unidade'],
+                        periodo_inicio=parsed['periodo_inicio'],
+                        periodo_fim=parsed['periodo_fim'],
                         valor=valor,
                         qualificadores_detectados=[],
                     )
-
                     verbas.append(verba)
 
                 except (ValueError, AttributeError, IndexError):
-                    # Skip lines that don't parse correctly
                     continue
 
         return verbas
 
+    def _parse_spprev_middle(self, middle: str) -> dict:
+        """
+        Parse middle section of SPPREV Aposentado verba line.
+
+        Expected: DENOMINACAO [NAT] [QTD] [UNIDADE] [PERIODO]
+        """
+        result = {
+            'denominacao': middle,
+            'natureza': NaturezaVerba.NORMAL,
+            'quantidade': None,
+            'unidade': None,
+            'periodo_inicio': None,
+            'periodo_fim': None,
+        }
+
+        if not middle:
+            return result
+
+        # Extract periodo at end: MM/YYYY
+        periodo_match = re.search(r'(\d{1,2}/\d{4})\s*$', middle)
+        if periodo_match:
+            periodo_str = periodo_match.group(1)
+            pi, pf = self._normalize_periodo_range(periodo_str)
+            result['periodo_inicio'] = pi
+            result['periodo_fim'] = pf
+            middle = middle[:periodo_match.start()].strip()
+
+        # Extract NAT letter and QTD from remaining tokens
+        tokens = middle.split()
+        if not tokens:
+            return result
+
+        # Scan from end for NAT letter and quantity
+        new_tokens = list(tokens)
+        for idx in range(len(tokens) - 1, 0, -1):
+            t = tokens[idx].upper()
+            # Single letter NAT
+            if t in self.NAT_MAP and len(tokens[idx]) == 1:
+                result['natureza'] = self.NAT_MAP[t]
+                new_tokens.pop(idx)
+                break
+
+        # Look for quantity (number) at end of remaining non-denom tokens
+        if len(new_tokens) > 1:
+            last = new_tokens[-1]
+            qty_match = re.match(r'^(\d+[.,]?\d*)$', last)
+            if qty_match:
+                try:
+                    result['quantidade'] = float(last.replace(',', '.'))
+                    new_tokens.pop()
+                except ValueError:
+                    pass
+
+        result['denominacao'] = ' '.join(new_tokens).strip()
+        return result
+
+    @staticmethod
+    def _normalize_periodo_range(periodo_str: str):
+        """Delegate to BaseParser's static method."""
+        from src.core.parsers.base_parser import BaseParser
+        return BaseParser._normalize_periodo_range(periodo_str)
+
     def _extract_totals(self) -> tuple:
         """
-        Extract totals (vencimentos, descontos, líquido)
+        Extract totals (vencimentos, descontos, líquido) and optionally base totals.
 
-        Handles two formats:
-        1. Same-line: "TOTAL VENCIMENTOS 8.979,01"
-        2. Two-line (SPPREV layout):
+        Two-line format:
            BASE IR BASE REDUTOR BASE CONTRIB PREV TOTAL VENCTOS TOTAL DE DESCONTOS TOTAL LÍQUIDO
            8.371,81 0,00 8.979,01 8.979,01 2.795,51 6.183,50
-           (last 3 values = vencimentos, descontos, líquido)
+           6 values = base_ir, base_redutor, base_contrib_prev, vencimentos, descontos, líquido
 
         Returns:
-            Tuple of (vencimentos, descontos, liquido)
+            Tuple of (vencimentos, descontos, liquido) or
+            (vencimentos, descontos, liquido, base_ir, base_redutor, base_contrib_prev)
         """
         if not self.paginas:
             return (0.0, 0.0, 0.0)
 
-        # Search from last page backwards
         for page in reversed(self.paginas):
             texto = page.texto
             lines = texto.split("\n")
@@ -392,24 +475,30 @@ class SpprevAposentadoParser(BaseParser):
             for i, line in enumerate(lines):
                 line_upper = line.upper().strip()
 
-                # Detect the totals header line (two-line format)
                 if ("VENCTO" in line_upper and "DESCONTO" in line_upper
                         and ("QUIDO" in line_upper or "LIQUIDO" in line_upper)):
-                    # Read the next non-empty line for values
                     for j in range(i + 1, min(i + 3, len(lines))):
                         next_line = lines[j].strip()
                         if not next_line:
                             continue
-                        # Extract all monetary values from the values line
                         valores = re.findall(r"[-]?[\d.,]+", next_line)
-                        if len(valores) >= 3:
-                            # Last 3 values = vencimentos, descontos, líquido
+                        if len(valores) >= 6:
+                            base_ir = self._parse_valor(valores[-6])
+                            base_redutor = self._parse_valor(valores[-5])
+                            base_contrib_prev = self._parse_valor(valores[-4])
+                            vencimentos = self._parse_valor(valores[-3])
+                            descontos = self._parse_valor(valores[-2])
+                            liquido = self._parse_valor(valores[-1])
+                            return (vencimentos, descontos, liquido,
+                                    base_ir, base_redutor, base_contrib_prev)
+                        elif len(valores) >= 3:
                             vencimentos = self._parse_valor(valores[-3])
                             descontos = self._parse_valor(valores[-2])
                             liquido = self._parse_valor(valores[-1])
                             return (vencimentos, descontos, liquido)
+                        break
 
-            # Fallback: single-line format "TOTAL VENCIMENTOS 5.000,00"
+            # Fallback: single-line format
             vencimentos = 0.0
             descontos = 0.0
             liquido = 0.0

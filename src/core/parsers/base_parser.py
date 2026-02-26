@@ -2,8 +2,9 @@
 Abstract base parser for holerite extraction
 """
 
+import re
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from src.core.pdf_reader import PaginaExtraida
 from src.core.data_model import Holerite, CabecalhoHolerite, Verba
 
@@ -149,3 +150,45 @@ class BaseParser(ABC):
                 continuation_pages.append(pagina)
 
         return continuation_pages
+
+    @staticmethod
+    def _normalize_periodo_range(periodo_str: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Normalize period string to (YYYY-MM, YYYY-MM) tuple.
+
+        Supports 3 formats:
+        - DD/MM/YYYY A DD/MM/YYYY → (YYYY-MM, YYYY-MM)
+        - MM/YYYY → (YYYY-MM, YYYY-MM) (same start and end)
+        - YYYY → (YYYY-01, YYYY-12)
+
+        Returns:
+            (periodo_inicio, periodo_fim) or (None, None) if unparseable
+        """
+        if not periodo_str:
+            return (None, None)
+
+        periodo_str = periodo_str.strip()
+
+        # Format: DD/MM/YYYY A DD/MM/YYYY
+        range_match = re.match(
+            r"(\d{2})/(\d{2})/(\d{4})\s+[Aa]\s+(\d{2})/(\d{2})/(\d{4})",
+            periodo_str,
+        )
+        if range_match:
+            m1, y1 = range_match.group(2), range_match.group(3)
+            m2, y2 = range_match.group(5), range_match.group(6)
+            return (f"{y1}-{m1}", f"{y2}-{m2}")
+
+        # Format: MM/YYYY
+        mm_yyyy = re.match(r"^(\d{1,2})/(\d{4})$", periodo_str)
+        if mm_yyyy:
+            m, y = mm_yyyy.group(1).zfill(2), mm_yyyy.group(2)
+            return (f"{y}-{m}", f"{y}-{m}")
+
+        # Format: YYYY
+        yyyy = re.match(r"^(\d{4})$", periodo_str)
+        if yyyy:
+            y = yyyy.group(1)
+            return (f"{y}-01", f"{y}-12")
+
+        return (None, None)

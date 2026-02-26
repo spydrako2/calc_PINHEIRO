@@ -234,7 +234,7 @@ class SpprevPensionistaParser(BaseParser):
         # Determine Tipo de Folha
         tipo_folha = self._extract_tipo_folha(texto, tipo_folha_str)
 
-        # Create header object
+        # Create header object with Pensionista-specific fields
         cabecalho = CabecalhoHolerite(
             nome=nome,
             cpf=cpf,
@@ -243,6 +243,13 @@ class SpprevPensionistaParser(BaseParser):
             competencia=competencia,
             tipo_folha=tipo_folha,
             template_type=TemplateType.SPPREV_PENSIONISTA,
+            entidade=entidade,
+            beneficio=beneficio,
+            numero_beneficio=beneficio_num,
+            cota_parte=cota_parte,
+            banco=banco,
+            agencia=agencia,
+            conta=conta,
         )
 
         self.extracted_cabecalho = cabecalho
@@ -258,7 +265,8 @@ class SpprevPensionistaParser(BaseParser):
         - Base Cálculo: Código DENOMINAÇÃO Vencimentos Descontos
         - Demonstrativo: Código DENOMINAÇÃO-C/D PERÍODO Vencimentos Descontos
 
-        The -C suffix means Crédito (CREDITO), -D means Débito (DEBITO)
+        -C = Crédito (vencimento), -D = Débito (desconto, stored as negative)
+        Descontos detected by column position and stored as negative values.
 
         Returns:
             List of Verba objects from both sections
@@ -267,24 +275,19 @@ class SpprevPensionistaParser(BaseParser):
             return []
 
         verbas = []
+        codigo_pattern = re.compile(r"^(\d{6})")
 
-        # Regex pattern for 6-digit código
-        codigo_pattern = r"^(\d{6})"
-
-        # Extract from all pages
         for page in self.paginas:
-            texto = page.texto
-            lines = texto.split("\n")
+            lines = page.texto.split("\n")
 
-            # Track which section we're in
             in_base_calculo = False
             in_demonstrativo = False
 
-            for i, line in enumerate(lines):
+            for line in lines:
                 line_upper = line.upper()
                 line_stripped = line.strip()
 
-                # Detect section start (handle both CALCULO and CÁLCULO)
+                # Detect section start
                 if "BASE" in line_upper and ("CALCULO" in line_upper or "CÁLCULO" in line_upper):
                     in_base_calculo = True
                     in_demonstrativo = False
@@ -294,54 +297,69 @@ class SpprevPensionistaParser(BaseParser):
                     in_demonstrativo = True
                     continue
 
-                # End of document
-                if "MENSAGEM" in line_upper or "ATEN" in line_upper.upper():
+                if "MENSAGEM" in line_upper or "ATEN" in line_upper:
                     in_base_calculo = False
                     in_demonstrativo = False
                     continue
 
-                # Skip if not in a section
                 if not in_base_calculo and not in_demonstrativo:
                     continue
 
-                # Skip empty lines or headers
                 if not line_stripped or "CÓDIGO" in line_upper:
                     continue
-
-                # Skip total lines
                 if "TOTAL" in line_upper or "LÍQUIDO" in line_upper:
                     continue
 
-                # Try to extract código
-                codigo_match = re.match(codigo_pattern, line_stripped)
+                codigo_match = codigo_pattern.match(line_stripped)
                 if not codigo_match:
                     continue
 
                 try:
                     codigo_raw = codigo_match.group(1)
+                    rest = line_stripped[codigo_match.end():].strip()
 
-                    # Get rest of line after código
-                    rest_of_line = line_stripped[codigo_match.end() :].strip()
-
-                    # Extract monetary value at end (handles Brazilian and American formats)
-                    valor_pattern = r"([-]?[\d.,]+)\s*$"
-                    valor_match = re.search(valor_pattern, rest_of_line)
-
-                    if not valor_match:
+                    # Extract all monetary values
+                    monetary_values = re.findall(r'(\d[\d.]*,\d{2})', rest)
+                    if not monetary_values:
+                        monetary_values = re.findall(r'(\d+\.\d{2})', rest)
+                    if not monetary_values:
                         continue
 
-                    valor_str = valor_match.group(1)
+                    # Determine vencimento vs desconto by position
+                    is_desconto = False
+                    if len(monetary_values) >= 2:
+                        last_val_pos = rest.rfind(monetary_values[-1])
+                        first_val_pos = rest.find(monetary_values[0])
+                        if last_val_pos > first_val_pos + len(monetary_values[0]) + 3:
+                            is_desconto = True
+                            val_str = monetary_values[-1]
+                        else:
+                            val_str = monetary_values[0]
+                    else:
+                        val_str = monetary_values[0]
+                        val_pos = line.rfind(val_str)
+                        line_len = len(line)
+                        if line_len > 0 and val_pos > line_len * 0.65:
+                            is_desconto = True
 
-                    # Get denominação section (everything between código and valor)
-                    denominacao_section = rest_of_line[: valor_match.start()].strip()
+                    valor = self._parse_valor(val_str)
+                    if is_desconto:
+                        valor = -abs(valor)
 
-                    # Check for -C (Crédito) or -D (Débito) marker
-                    # In DEMONSTRATIVO, format is: "DENOMINAÇÃO-C PERÍODO" or "DENOMINAÇÃO-D PERÍODO"
+                    # Strip monetary values from rest to get middle
+                    middle = rest
+                    for mv in monetary_values:
+                        middle = middle.replace(mv, '', 1)
+                    middle = middle.strip()
+
+                    # Parse -C/-D marker and periodo
                     natureza = NaturezaVerba.NORMAL
-                    denominacao = denominacao_section
+                    denominacao = middle
+                    periodo_inicio = None
+                    periodo_fim = None
 
-                    # Search for -C or -D marker anywhere in the denominação section
-                    marker_match = re.search(r"(.+?)-([CD])\b", denominacao_section)
+                    # Check for -C/-D marker
+                    marker_match = re.search(r'(.+?)-([CD])\b', middle)
                     if marker_match and in_demonstrativo:
                         denominacao = marker_match.group(1).strip()
                         marker = marker_match.group(2)
@@ -349,23 +367,35 @@ class SpprevPensionistaParser(BaseParser):
                             natureza = NaturezaVerba.CREDITO
                         elif marker == "D":
                             natureza = NaturezaVerba.DEBITO
-                    elif not in_demonstrativo:
-                        denominacao = denominacao_section.strip()
+                        # Remaining after marker for periodo
+                        after_marker = middle[marker_match.end():].strip()
+                        periodo_match = re.search(r'(\d{1,2}/\d{4})', after_marker)
+                        if periodo_match:
+                            from src.core.parsers.base_parser import BaseParser
+                            periodo_inicio, periodo_fim = BaseParser._normalize_periodo_range(
+                                periodo_match.group(1)
+                            )
+                    elif in_demonstrativo:
+                        # No marker but in demonstrativo — extract periodo
+                        periodo_match = re.search(r'(\d{1,2}/\d{4})\s*$', denominacao)
+                        if periodo_match:
+                            from src.core.parsers.base_parser import BaseParser
+                            periodo_inicio, periodo_fim = BaseParser._normalize_periodo_range(
+                                periodo_match.group(1)
+                            )
+                            denominacao = denominacao[:periodo_match.start()].strip()
 
-                    # Parse valor
-                    valor = self._parse_valor(valor_str)
-
-                    # Create Verba object
                     verba = Verba(
                         codigo=codigo_raw,
                         denominacao=denominacao if denominacao else "UNKNOWN",
                         natureza=natureza,
                         quantidade=None,
                         unidade=None,
+                        periodo_inicio=periodo_inicio,
+                        periodo_fim=periodo_fim,
                         valor=valor,
                         qualificadores_detectados=[],
                     )
-
                     verbas.append(verba)
 
                 except (ValueError, AttributeError, IndexError):

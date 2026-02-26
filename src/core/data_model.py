@@ -61,6 +61,17 @@ class CabecalhoHolerite:
     tipo_folha: TipoFolha = TipoFolha.NORMAL
     data_pagamento: Optional[str] = None
     template_type: TemplateType = TemplateType.DDPE
+    # SPPREV-specific fields
+    entidade: Optional[str] = None
+    beneficio: Optional[str] = None
+    numero_beneficio: Optional[str] = None
+    percentual_aposentadoria: Optional[str] = None
+    cota_parte: Optional[str] = None
+    regime_retribuicao: Optional[str] = None
+    banco: Optional[str] = None
+    agencia: Optional[str] = None
+    conta: Optional[str] = None
+    nivel: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.tipo_folha, str):
@@ -80,6 +91,10 @@ class Holerite:
     pagina_numero: int = 0
     metodo_extracao: str = "TEXTO"  # "TEXTO" or "OCR"
     confianca: float = 1.0  # 0.0-1.0
+    # SPPREV base totals
+    base_ir: Optional[float] = None
+    base_redutor: Optional[float] = None
+    base_contrib_prev: Optional[float] = None
 
     def add_verba(self, verba: Verba):
         """Add a verba to this holerite"""

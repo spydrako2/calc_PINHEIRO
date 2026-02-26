@@ -152,9 +152,29 @@ class DDPEParser(BaseParser):
         self.extracted_cabecalho = cabecalho
         return cabecalho
 
+    # Valid DDPE units
+    VALID_UNITS = {"PERC.", "VALOR", "DIAS", "QTDE", "AULAS", "HORAS"}
+
+    # NAT letter to NaturezaVerba mapping
+    NAT_MAP = {
+        "N": NaturezaVerba.NORMAL,
+        "A": NaturezaVerba.ATRASADO,
+        "R": NaturezaVerba.REPOSICAO,
+        "D": NaturezaVerba.DEVOLUCAO,
+        "E": NaturezaVerba.ESTORNO,
+    }
+
     def _extract_verbas(self) -> List[Verba]:
         """
-        Extract earnings/deductions (verbas) from first and continuation pages
+        Extract earnings/deductions (verbas) from all pages.
+
+        DDPE full format:
+        12.015  ADIC.LOCAL EXERC.CAR.POL/DELEG.  A  PERC.  01/09/2007 A 30/09/2007  329,65+
+        70.006  IAMSPE                            A  2,00  PERC.  01/09/2007 A 30/09/2007  6,59-
+        01.001  SALÁRIO                           N         01/02/2026 A 28/02/2026  5.000,00+
+
+        Also supports simplified format (legacy mocks):
+        01.001  SALÁRIO  5.000,00
 
         Returns:
             List of Verba objects
@@ -163,109 +183,181 @@ class DDPEParser(BaseParser):
             return []
 
         verbas = []
+        from src.core.normalizer import CodigoVerbaNormalizer
 
-        # Regex pattern: CÓDIGO at start, then DENOMINAÇÃO, then VALOR at end
-        # This is more robust than trying to capture intermediate whitespace
-        codigo_start_pattern = r'^(\d{2}\.?\d{3})'
-        valor_end_pattern = r'([-]?\d+[.,]\d{2})\s*$'
+        # Full DDPE line pattern:
+        # CODIGO  DENOM  [NAT]  [QTD]  [UNID]  [PERIODO]  VALOR[+/-]
+        # Simplified fallback: CODIGO  DENOM  VALOR
+        codigo_start = re.compile(r'^(\d{2}\.?\d{3})\s+')
+        # Value at end with optional +/- sign
+        valor_end_full = re.compile(r'([-]?\d[\d.,]*\d)\s*([+\-])\s*$')
+        valor_end_simple = re.compile(r'([-]?\d[\d.,]*\d)\s*$')
 
-        # Extract from all pages (header on page 1, continuation on subsequent pages)
+        # Detect context for fallback natureza (section-based)
+        is_atrasado_section = False
+        is_reposicao_section = False
+
         for page in self.paginas:
-            texto = page.texto
-            lines = texto.split('\n')
+            lines = page.texto.split('\n')
 
-            # Detect context for natureza detection
-            is_atrasado_section = False
-            is_reposicao_section = False
-
-            for i, line in enumerate(lines):
+            for line in lines:
                 line_upper = line.upper()
                 line_stripped = line.strip()
 
-                # Check for section markers
-                if 'ATRASADO' in line_upper:
+                # Section markers (fallback for simplified format)
+                if 'ATRASADO' in line_upper and not re.match(r'^\d{2}\.?\d{3}', line_stripped):
                     is_atrasado_section = True
                     is_reposicao_section = False
                     continue
-                elif 'REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper:
+                elif ('REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper) and not re.match(r'^\d{2}\.?\d{3}', line_stripped):
                     is_reposicao_section = True
                     is_atrasado_section = False
                     continue
                 elif 'TOTAL' in line_upper or 'LÍQUIDO' in line_upper:
                     break
 
-                # Skip empty lines and headers
                 if not line_stripped or 'CÓDIGO' in line_upper or 'DENOMINAÇÃO' in line_upper:
                     continue
 
-                # Try to extract codigo at start of line
-                codigo_match = re.match(codigo_start_pattern, line_stripped)
+                codigo_match = codigo_start.match(line_stripped)
                 if not codigo_match:
                     continue
 
-                # Try to extract valor at end of line
-                valor_match = re.search(valor_end_pattern, line_stripped)
-                if not valor_match:
-                    continue
-
-                # Extract denominacao from middle
-                codigo_raw = codigo_match.group(1)
-                valor_str = valor_match.group(1)
-
-                # Denominacao is everything between codigo and valor
-                codigo_end = codigo_match.end()
-                valor_start = valor_match.start()
-                denominacao = line_stripped[codigo_end:valor_start].strip()
-
                 try:
-                    # Normalize valor (handle both Brazilian 1.000,00 and American 1000.00 formats)
-                    # If there's a comma, it's Brazilian format: 1.000,00
-                    # If there's only dot and looks like American: 1000.00
-                    if ',' in valor_str:
-                        # Brazilian format: remove dots (thousands), replace comma with dot
-                        valor_normalized = valor_str.replace('.', '').replace(',', '.')
-                    elif valor_str.count('.') == 1 and valor_str.endswith(('.00', '.50', '.25', '.75')):
-                        # American format (ends with .00, .50, etc.)
-                        valor_normalized = valor_str
+                    codigo_raw = codigo_match.group(1)
+                    rest = line_stripped[codigo_match.end():]
+
+                    # Try full format first: value with +/- sign at end
+                    valor_match = valor_end_full.search(rest)
+                    if valor_match:
+                        valor_str = valor_match.group(1)
+                        sinal = valor_match.group(2)
+                        valor = self._parse_valor(valor_str)
+                        if sinal == '-':
+                            valor = -abs(valor)
+                        else:
+                            valor = abs(valor)
+                        middle = rest[:valor_match.start()].strip()
+                        parsed = self._parse_ddpe_middle(middle)
                     else:
-                        # Default: assume Brazilian format
-                        valor_normalized = valor_str.replace('.', '').replace(',', '.')
+                        # Simplified format: no +/- sign
+                        valor_match = valor_end_simple.search(rest)
+                        if not valor_match:
+                            continue
+                        valor_str = valor_match.group(1)
+                        valor = self._parse_valor(valor_str)
+                        middle = rest[:valor_match.start()].strip()
+                        parsed = self._parse_ddpe_middle(middle)
 
-                    valor = float(valor_normalized)
-
-                    # Normalize código
-                    from src.core.normalizer import CodigoVerbaNotmalizer
-                    codigo = CodigoVerbaNotmalizer.normalize(codigo_raw)
-
-                    # Determine natureza
-                    natureza = NaturezaVerba.NORMAL
-                    if is_atrasado_section:
+                    # Determine natureza: prefer NAT column, fallback to section
+                    if parsed['nat']:
+                        natureza = self.NAT_MAP.get(parsed['nat'], NaturezaVerba.NORMAL)
+                    elif is_atrasado_section:
                         natureza = NaturezaVerba.ATRASADO
                     elif is_reposicao_section:
                         natureza = NaturezaVerba.REPOSICAO
-                    elif 'ATRASADO' in line_upper:
-                        natureza = NaturezaVerba.ATRASADO
-                    elif 'REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper:
-                        natureza = NaturezaVerba.REPOSICAO
+                    else:
+                        natureza = NaturezaVerba.NORMAL
 
-                    # Create Verba object
+                    # Parse periodo
+                    periodo_inicio, periodo_fim = None, None
+                    if parsed['periodo']:
+                        periodo_inicio, periodo_fim = self._normalize_periodo_range(parsed['periodo'])
+
+                    codigo = CodigoVerbaNormalizer.normalize(codigo_raw)
+
                     verba = Verba(
                         codigo=codigo,
-                        denominacao=denominacao.strip(),
+                        denominacao=parsed['denominacao'].strip() or "UNKNOWN",
                         natureza=natureza,
-                        quantidade=None,
-                        unidade=None,
+                        quantidade=parsed['quantidade'],
+                        unidade=parsed['unidade'],
+                        periodo_inicio=periodo_inicio,
+                        periodo_fim=periodo_fim,
                         valor=valor,
                         qualificadores_detectados=[],
                     )
-
                     verbas.append(verba)
 
                 except (ValueError, AttributeError, IndexError):
-                    # Skip lines that don't parse correctly
                     continue
 
         return verbas
+
+    def _parse_ddpe_middle(self, middle: str) -> dict:
+        """
+        Parse the middle section of a DDPE verba line (between codigo and valor).
+
+        Expected order: DENOMINACAO [NAT] [QTD] [UNIDADE] [PERIODO]
+
+        Returns dict with keys: denominacao, nat, quantidade, unidade, periodo
+        """
+        result = {
+            'denominacao': middle,
+            'nat': None,
+            'quantidade': None,
+            'unidade': None,
+            'periodo': None,
+        }
+
+        if not middle:
+            return result
+
+        # Extract periodo range at end: DD/MM/YYYY A DD/MM/YYYY or MM/YYYY
+        periodo_match = re.search(
+            r'(\d{2}/\d{2}/\d{4}\s+[Aa]\s+\d{2}/\d{2}/\d{4}|\d{1,2}/\d{4}|\d{4})\s*$',
+            middle
+        )
+        if periodo_match:
+            result['periodo'] = periodo_match.group(1).strip()
+            middle = middle[:periodo_match.start()].strip()
+
+        # Extract unidade (PERC., VALOR, DIAS, QTDE, AULAS, HORAS)
+        for unit in self.VALID_UNITS:
+            unit_pattern = re.escape(unit)
+            unit_match = re.search(rf'\b{unit_pattern}\b', middle, re.IGNORECASE)
+            if unit_match:
+                result['unidade'] = unit.upper()
+                middle = (middle[:unit_match.start()] + middle[unit_match.end():]).strip()
+                break
+
+        # Extract NAT letter (single letter N/A/R/D/E surrounded by spaces or at boundary)
+        # Must be after denominacao text — search from end toward start
+        tokens = middle.split()
+        if len(tokens) >= 2:
+            # Check if last token is a NAT letter
+            last = tokens[-1].upper()
+            if last in self.NAT_MAP and len(tokens[-1]) == 1:
+                result['nat'] = last
+                tokens = tokens[:-1]
+                middle = ' '.join(tokens)
+            else:
+                # Check second-to-last or embedded NAT
+                for idx in range(len(tokens) - 1, 0, -1):
+                    t = tokens[idx].upper()
+                    if t in self.NAT_MAP and len(tokens[idx]) == 1:
+                        result['nat'] = t
+                        tokens.pop(idx)
+                        middle = ' '.join(tokens)
+                        break
+
+        # Extract quantidade (number that's not part of denominacao)
+        # Look for standalone number at the end of remaining middle
+        tokens = middle.split()
+        if tokens:
+            last_token = tokens[-1]
+            qty_match = re.match(r'^(\d+[.,]?\d*)$', last_token)
+            if qty_match and len(tokens) > 1:
+                try:
+                    qty_str = last_token.replace(',', '.')
+                    result['quantidade'] = float(qty_str)
+                    tokens = tokens[:-1]
+                    middle = ' '.join(tokens)
+                except ValueError:
+                    pass
+
+        result['denominacao'] = middle.strip()
+        return result
 
     def _extract_totals(self) -> tuple:
         """

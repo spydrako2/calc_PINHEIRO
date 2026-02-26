@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
 
 
-class CodigoVerbaNotmalizer:
+class CodigoVerbaNormalizer:
     """Normalize verba codes between formats (XX.XXX <-> XXXXXX)"""
 
     # Equivalence table for verba codes (across template versions)
@@ -49,7 +49,7 @@ class CodigoVerbaNotmalizer:
         Returns:
             Display format: "70.006"
         """
-        normalized = CodigoVerbaNotmalizer.normalize(codigo)
+        normalized = CodigoVerbaNormalizer.normalize(codigo)
         # Remove leading zero: 070006 -> 70006, then format as XX.XXX
         value = int(normalized)  # 070006 -> 70006
         return f"{value // 1000:02d}.{value % 1000:03d}"
@@ -65,18 +65,22 @@ class CodigoVerbaNotmalizer:
         Returns:
             Equivalent code or None if not found
         """
-        normalized = CodigoVerbaNotmalizer.normalize(codigo)
+        normalized = CodigoVerbaNormalizer.normalize(codigo)
 
-        for key, values in CodigoVerbaNotmalizer.EQUIVALENCIAS.items():
-            key_norm = CodigoVerbaNotmalizer.normalize(key)
+        for key, values in CodigoVerbaNormalizer.EQUIVALENCIAS.items():
+            key_norm = CodigoVerbaNormalizer.normalize(key)
             if key_norm == normalized:
-                return CodigoVerbaNotmalizer.normalize(values[0])
+                return CodigoVerbaNormalizer.normalize(values[0])
 
             for val in values:
-                if CodigoVerbaNotmalizer.normalize(val) == normalized:
+                if CodigoVerbaNormalizer.normalize(val) == normalized:
                     return key_norm
 
         return None
+
+
+# Backward-compatible alias (typo in original name)
+CodigoVerbaNotmalizer = CodigoVerbaNormalizer
 
 
 class AlocacaoTemporal:
@@ -186,3 +190,31 @@ class AlocacaoTemporal:
         data_inicio = f"{data_inicio_obj.year:04d}-{data_inicio_obj.month:02d}"
 
         return (data_inicio, data_fim)
+
+    @staticmethod
+    def get_mes_alocacao_from_range(
+        periodo_inicio: Optional[str],
+        periodo_fim: Optional[str],
+        natureza: str = "N",
+        competencia_fallback: Optional[str] = None,
+    ) -> str:
+        """
+        Get allocation month from a period range.
+
+        Uses periodo_fim as the reference period.
+        For Normal (N): mes_alocacao = periodo_fim (or competencia if absent)
+        For others (A, R, D, E): mes_alocacao = periodo_fim + 1 month
+
+        Args:
+            periodo_inicio: Start period "YYYY-MM" (unused for allocation, kept for context)
+            periodo_fim: End period "YYYY-MM"
+            natureza: "N", "A", "R", "D", "E"
+            competencia_fallback: Fallback if periodo_fim is absent
+
+        Returns:
+            Allocation month "YYYY-MM"
+        """
+        ref = periodo_fim or competencia_fallback
+        if not ref:
+            raise ValueError("No period reference available for allocation")
+        return AlocacaoTemporal.get_mes_alocacao(ref, natureza)

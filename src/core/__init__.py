@@ -9,7 +9,7 @@ from .data_model import (
     TemplateType,
     ExtractionContext,
 )
-from .normalizer import CodigoVerbaNotmalizer, AlocacaoTemporal
+from .normalizer import CodigoVerbaNormalizer, CodigoVerbaNotmalizer, AlocacaoTemporal
 
 __all__ = [
     "Holerite",
@@ -19,6 +19,7 @@ __all__ = [
     "TipoFolha",
     "TemplateType",
     "ExtractionContext",
+    "CodigoVerbaNormalizer",
     "CodigoVerbaNotmalizer",
     "AlocacaoTemporal",
 ]
