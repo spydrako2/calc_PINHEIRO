@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 
 from src.core.pdf_reader import PDFReader
 from src.core.parsers.ddpe_parser import DDPEParser
+from src.core.parsers.spprev_aposentado_parser import SpprevAposentadoParser
 
 
 class BaseTese(ABC):
@@ -44,7 +45,8 @@ class BaseTese(ABC):
             }
         """
         pages = PDFReader.read_pdf(pdf_path)
-        parser = DDPEParser()
+        _ddpe = DDPEParser()
+        _spprev = SpprevAposentadoParser()
 
         nome_cliente = "UNKNOWN"
         periods = defaultdict(lambda: {
@@ -55,7 +57,11 @@ class BaseTese(ABC):
         quinq_by_comp = {}
 
         for p in pages:
-            if not parser.detect_template(p.texto):
+            if _ddpe.detect_template(p.texto):
+                ParserClass = DDPEParser
+            elif _spprev.detect_template(p.texto):
+                ParserClass = SpprevAposentadoParser
+            else:
                 continue
 
             comp = self._extract_competencia(p.texto)
@@ -66,7 +72,7 @@ class BaseTese(ABC):
             if nome_cliente == "UNKNOWN":
                 nome_cliente = self._extract_nome(p.texto)
 
-            pi = DDPEParser()
+            pi = ParserClass()
             pi.paginas = [p]
             verbas = pi._extract_verbas()
 
@@ -127,17 +133,24 @@ class BaseTese(ABC):
 
     @staticmethod
     def _extract_competencia(texto: str) -> Optional[str]:
+        # DDPE: "FOLHA NORMAL - 11/2025" or similar
         m = re.search(r'FOLHA\s+\w+\s*-?\s*(\d{2}/\d{4})', texto, re.IGNORECASE)
         if m:
             mm, yyyy = m.group(1).split('/')
             return f"{yyyy}-{mm}"
+        # SPPREV: label "COMPETÊNCIA" on one line, value "05/2020" on the next
+        m = re.search(r'COMPET[A-Z]*.*?(\d{1,2}/\d{4})', texto, re.IGNORECASE | re.DOTALL)
+        if m:
+            mm, yyyy = m.group(1).split('/')
+            return f"{yyyy}-{int(mm):02d}"
         return None
 
     @staticmethod
     def _extract_nome(texto: str) -> str:
         lines = texto.split('\n')
         for i, line in enumerate(lines):
-            if 'Nome' in line and ('C.P.F' in line or 'CPF' in line):
+            lu = line.upper()
+            if 'NOME' in lu and ('C.P.F' in lu or 'CPF' in lu):
                 if i + 1 < len(lines):
                     next_line = lines[i + 1].strip()
                     m = re.match(r'^([A-ZÁÉÍÓÚÂÃÕÊÔÇÜ\s]+)', next_line)
