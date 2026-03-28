@@ -42,9 +42,8 @@ class TestDDPEParserE2E:
         70.006 IAMSPE -100.00
         70.007 ICMS -50.00
 
-        TOTAL VENCIMENTOS 6200.00
-        TOTAL DESCONTOS 150.00
-        LÍQUIDO 6050.00
+        Total  Descontos  Líquido a Receber
+        6.200,00  150,00  6.050,00
         """
         return PaginaExtraida(numero=1, texto=texto, metodo="TEXTO", confianca=0.95)
 
@@ -262,9 +261,8 @@ class TestDDPEParserE2E:
         70.006 IAMSPE -100.00
         70.007 ICMS -50.00
 
-        TOTAL VENCIMENTOS 6000.00
-        TOTAL DESCONTOS 150.00
-        LÍQUIDO 5850.00
+        Total  Descontos  Líquido a Receber
+        6.000,00  150,00  5.850,00
         """, metodo="TEXTO", confianca=0.95)
 
         holerite = parser.parse([page1, page2])
@@ -296,9 +294,8 @@ class TestDDPEParserE2E:
         page3 = PaginaExtraida(numero=3, texto="""
         70.002 IR -300.00
 
-        TOTAL VENCIMENTOS 4950.00
-        TOTAL DESCONTOS 700.00
-        LÍQUIDO 4250.00
+        Total  Descontos  Líquido a Receber
+        4.950,00  700,00  4.250,00
         """, metodo="TEXTO", confianca=0.95)
 
         holerite = parser.parse([page1, page2, page3])

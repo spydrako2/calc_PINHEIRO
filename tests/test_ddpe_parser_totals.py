@@ -26,9 +26,8 @@ class TestDDPEParserTotals:
         01.002 ADIANTAMENTO 1000.00
         70.006 IAMSPE -100.00
 
-        TOTAL VENCIMENTOS 6000.00
-        TOTAL DESCONTOS 100.00
-        LÍQUIDO 5900.00
+        Total  Descontos  Líquido a Receber
+        6.000,00  100,00  5.900,00
         """
         return PaginaExtraida(numero=1, texto=texto, metodo="TEXTO", confianca=0.95)
 
@@ -67,9 +66,8 @@ class TestDDPEParserTotals:
         CPF: 123.456.789-00
         NOME: TEST
 
-        TOTAL VENCIMENTOS 6.000,00
-        TOTAL DESCONTOS 100,00
-        LÍQUIDO 5.900,00
+        Total  Descontos  Líquido a Receber
+        6.000,00  100,00  5.900,00
         """
         page = PaginaExtraida(numero=1, texto=texto, metodo="TEXTO", confianca=0.95)
         parser.paginas = [page]
@@ -119,9 +117,8 @@ class TestDDPEParserTotals:
         CPF: 123.456.789-00
         NOME: TEST
 
-        total vencimentos 5000.00
-        TOTAL DESCONTOS 100.00
-        líquido 4900.00
+        total  descontos  líquido a receber
+        5.000,00  100,00  4.900,00
         """
         page = PaginaExtraida(numero=1, texto=texto, metodo="TEXTO", confianca=0.95)
         parser.paginas = [page]
