@@ -42,20 +42,27 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
     title_font = Font(bold=True, size=14, color=AZUL)
     subtitle_font = Font(bold=True, size=11, color=DOURADO)
 
+    # Detect if any period has sexta parte (to decide whether to show those columns)
+    periodos_check = resultado['periodos']
+    has_sexta = any(d.get('tem_sexta_parte', False) for d in periodos_check.values())
+
+    # Number of columns: 5 base + 3 sexta-parte columns when applicable
+    last_col = 'H' if has_sexta else 'E'
+
     # --- Title block ---
-    ws.merge_cells('A1:E1')
+    ws.merge_cells(f'A1:{last_col}1')
     cell_title = ws['A1']
     cell_title.value = f"HoleritePRO — {resultado['tese_nome']}"
     cell_title.font = title_font
     cell_title.alignment = Alignment(horizontal='center')
 
-    ws.merge_cells('A2:E2')
+    ws.merge_cells(f'A2:{last_col}2')
     cell_cliente = ws['A2']
     cell_cliente.value = f"Cliente: {resultado['nome_cliente']}"
     cell_cliente.font = subtitle_font
     cell_cliente.alignment = Alignment(horizontal='center')
 
-    ws.merge_cells('A3:E3')
+    ws.merge_cells(f'A3:{last_col}3')
     cell_desc = ws['A3']
     cell_desc.value = resultado['tese_descricao']
     cell_desc.font = Font(italic=True, size=9, color="666666")
@@ -68,8 +75,11 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
         resultado['verba_nome'],
         "Qtde Quinquênios",
         "% Adic. Temporal",
-        "Reflexo (R$)",
+        "Reflexo Quinquênio",
     ]
+    if has_sexta:
+        headers += ["Tem 6ª Parte?", "Reflexo 6ª Parte", "TOTAL DEVIDO"]
+
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=header_row, column=col, value=h)
         cell.font = hdr_font
@@ -140,6 +150,25 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
         cell_e.number_format = money_fmt
         cell_e.border = thin
 
+        if has_sexta:
+            # F: Tem 6ª Parte?
+            sexta_val = "Sim" if data.get('tem_sexta_parte', False) else "Não"
+            cell_f = ws.cell(row=row, column=6, value=sexta_val)
+            cell_f.border = thin
+            cell_f.alignment = Alignment(horizontal='center')
+
+            # G: Reflexo 6ª Parte = IF(F="Sim", E/6, 0)
+            cell_g = ws.cell(row=row, column=7)
+            cell_g.value = f'=IF(F{row}="Sim",E{row}/6,0)'
+            cell_g.number_format = money_fmt
+            cell_g.border = thin
+
+            # H: Total Devido = E + G
+            cell_h = ws.cell(row=row, column=8)
+            cell_h.value = f"=E{row}+G{row}"
+            cell_h.number_format = money_fmt
+            cell_h.border = thin
+
     # --- Totals row ---
     last_data = data_start + len(sorted_periods) - 1
     total_row = last_data + 1
@@ -159,6 +188,19 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
     cell_te.font = total_font
     cell_te.border = thin
 
+    if has_sexta:
+        cell_tg = ws.cell(row=total_row, column=7)
+        cell_tg.value = f"=SUM(G{data_start}:G{last_data})"
+        cell_tg.number_format = money_fmt
+        cell_tg.font = total_font
+        cell_tg.border = thin
+
+        cell_th = ws.cell(row=total_row, column=8)
+        cell_th.value = f"=SUM(H{data_start}:H{last_data})"
+        cell_th.number_format = money_fmt
+        cell_th.font = total_font
+        cell_th.border = thin
+
     # --- Legend ---
     legend_row = total_row + 2
     ws.cell(row=legend_row, column=1, value="Legenda:").font = Font(bold=True, size=9)
@@ -173,6 +215,10 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
     ws.column_dimensions['C'].width = 18
     ws.column_dimensions['D'].width = 18
     ws.column_dimensions['E'].width = 18
+    if has_sexta:
+        ws.column_dimensions['F'].width = 14
+        ws.column_dimensions['G'].width = 18
+        ws.column_dimensions['H'].width = 18
 
     wb.save(output_path)
     return output_path
