@@ -307,7 +307,8 @@ def main():
                         row = {"Competência": BaseTese.format_comp_display(per)}
                         linha_total = 0.0
                         for code, label in rubricas.items():
-                            val = periodos[per].get(code, 0.0)
+                            cell_data = periodos[per].get(code, {'normal': 0.0, 'atrasados': []})
+                            val = cell_data['normal'] + sum(v for _, v in cell_data['atrasados'])
                             row[label] = f"R$ {val:,.2f}" if val else "-"
                             linha_total += val
                         row["VALOR DEVIDO"] = f"R$ {linha_total:,.2f}"

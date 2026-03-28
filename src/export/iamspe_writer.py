@@ -7,6 +7,8 @@ Formato idêntico à planilha de referência do escritório.
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
+from src.teses.base_tese import BaseTese
 
 
 def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
@@ -35,7 +37,8 @@ def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
     )
     hdr_font = Font(bold=True, color="FFFFFF", size=10)
     hdr_fill = PatternFill(start_color=AZUL, end_color=AZUL, fill_type="solid")
-    total_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+    total_fill    = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+    atrasado_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     total_font = Font(bold=True, size=10)
     title_font = Font(bold=True, size=13, color=AZUL)
     subtitle_font = Font(bold=True, size=11, color=DOURADO)
@@ -97,11 +100,32 @@ def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
         c.border = thin
         c.alignment = Alignment(horizontal='center')
 
-        # Colunas de rubricas
+        # Colunas de rubricas — fórmula se houver atrasados
         for j, code in enumerate(sorted_codes):
             col = 2 + j
-            val = periodos[per].get(code, 0.0)
-            c = ws.cell(row=row, column=col, value=val if val != 0.0 else None)
+            cell_data = periodos[per].get(code, {'normal': 0.0, 'atrasados': []})
+            normal    = cell_data['normal']
+            atrasados = cell_data['atrasados']
+            total     = normal + sum(v for _, v in atrasados)
+
+            if atrasados:
+                parts = []
+                if normal:
+                    parts.append(f"{normal:.2f}")
+                for _, v in atrasados:
+                    parts.append(f"{v:.2f}")
+                cell_val = ("=" + "+".join(parts)) if parts else None
+                c = ws.cell(row=row, column=col, value=cell_val)
+                c.fill = atrasado_fill
+                comment_lines = []
+                if normal:
+                    comment_lines.append(f"Normal: R$ {normal:.2f}")
+                for comp_pgto, val in atrasados:
+                    pgto_display = BaseTese.format_comp_display(BaseTese.mes_pagamento(comp_pgto))
+                    comment_lines.append(f"Atraso pago em {pgto_display}: R$ {val:.2f}")
+                c.comment = Comment("\n".join(comment_lines), "HoleritePRO")
+            else:
+                c = ws.cell(row=row, column=col, value=total if total != 0.0 else None)
             c.number_format = money_fmt
             c.border = thin
 

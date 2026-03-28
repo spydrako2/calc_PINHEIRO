@@ -70,8 +70,8 @@ class TeseIAMSPE:
         parser = DDPEParser()
 
         nome_cliente = "UNKNOWN"
-        # {periodo: {codigo: float}}
-        pivot: dict = defaultdict(lambda: defaultdict(float))
+        # {payment_key: {codigo: {'normal': float, 'atrasados': [(comp, val)]}}}
+        pivot: dict = defaultdict(lambda: defaultdict(lambda: {'normal': 0.0, 'atrasados': []}))
         # {codigo: label} — ordem de aparição
         rubrica_labels: dict = {}
 
@@ -97,25 +97,39 @@ class TeseIAMSPE:
                 if v.codigo not in rubrica_labels:
                     rubrica_labels[v.codigo] = self._make_label(v.codigo, v.denominacao)
 
-                # Atribuir ao período de competência original (periodo_fim) se disponível
-                periodo = v.periodo_fim or comp
-                # Descontos são negativos no holerite; armazenar como positivo (valor a cobrar)
-                pivot[periodo][v.codigo] += abs(v.valor)
+                # Expand period range; row = payment month (comp+1)
+                periodo_fim = v.periodo_fim or comp
+                periodo_inicio = v.periodo_inicio or periodo_fim
+                months = BaseTese._months_in_range(periodo_inicio, periodo_fim)
+                valores = BaseTese._distribute_valor(abs(v.valor), len(months))
+                is_atrasado = v.natureza.value in ('A', 'R')
 
-        # Ordenar períodos cronologicamente
+                for m, val in zip(months, valores):
+                    pay_key = BaseTese.mes_pagamento(m)
+                    if is_atrasado:
+                        pivot[pay_key][v.codigo]['atrasados'].append((comp, val))
+                    else:
+                        pivot[pay_key][v.codigo]['normal'] += val
+
+        # Ordenar períodos cronologicamente e códigos numericamente
         sorted_periods = sorted(pivot.keys())
-        # Ordenar códigos numericamente
         sorted_codes = sorted(rubrica_labels.keys())
 
         periodos_out = OrderedDict()
         for per in sorted_periods:
             periodos_out[per] = {
-                code: pivot[per].get(code, 0.0)
+                code: dict(pivot[per].get(code, {'normal': 0.0, 'atrasados': []}))
                 for code in sorted_codes
             }
 
+        def _total_cell(cell):
+            return cell['normal'] + sum(v for _, v in cell['atrasados'])
+
         total_por_rubrica = {
-            code: sum(pivot[per].get(code, 0.0) for per in sorted_periods)
+            code: sum(
+                _total_cell(pivot[per].get(code, {'normal': 0.0, 'atrasados': []}))
+                for per in sorted_periods
+            )
             for code in sorted_codes
         }
         total_geral = sum(total_por_rubrica.values())
@@ -129,8 +143,8 @@ class TeseIAMSPE:
             'tese_nome': self.nome,
             'tese_descricao': self.descricao,
             'tese_tipo': self.tese_tipo,
-            'rubricas': rubricas,            # {code: label}
-            'periodos': periodos_out,         # {periodo: {code: value}}
+            'rubricas': rubricas,             # {code: label}
+            'periodos': periodos_out,          # {payment_key: {code: {'normal', 'atrasados'}}}
             'total_por_rubrica': total_por_rubrica,
             'total_geral': total_geral,
         }

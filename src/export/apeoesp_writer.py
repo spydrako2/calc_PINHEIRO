@@ -8,6 +8,8 @@ from collections import defaultdict
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
+from src.teses.base_tese import BaseTese
 
 
 # Colunas fixas (índices 1-based)
@@ -38,6 +40,18 @@ HEADERS = [
 ]
 
 
+def _col_formula(normal: float, atrasados: list):
+    """Returns formula string '=normal+atraso1+...' or plain value when no atrasados."""
+    if not atrasados:
+        return normal or None
+    parts = []
+    if normal:
+        parts.append(f"{normal:.2f}")
+    for _, val in atrasados:
+        parts.append(f"{val:.2f}")
+    return ("=" + "+".join(parts)) if parts else None
+
+
 def write_apeoesp_xlsx(resultado: dict, output_path: str) -> str:
     wb = Workbook()
     ws = wb.active
@@ -61,8 +75,9 @@ def write_apeoesp_xlsx(resultado: dict, output_path: str) -> str:
     total_font = Font(bold=True, size=10)
     title_font = Font(bold=True, size=13, color=AZUL)
     sub_font   = Font(bold=True, size=11, color=DOURADO)
-    verde_fill = PatternFill(start_color=VERDE, end_color=VERDE, fill_type="solid")
-    cinza_fill = PatternFill(start_color=CINZA, end_color=CINZA, fill_type="solid")
+    verde_fill    = PatternFill(start_color=VERDE,    end_color=VERDE,    fill_type="solid")
+    cinza_fill    = PatternFill(start_color=CINZA,    end_color=CINZA,    fill_type="solid")
+    atrasado_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     bold9      = Font(bold=True, size=9)
     norm9      = Font(size=9)
 
@@ -128,20 +143,56 @@ def write_apeoesp_xlsx(resultado: dict, output_path: str) -> str:
             c.font = norm9
             c.alignment = Alignment(horizontal='center')
 
-            # B: Gratif Geral
-            ws.cell(row=row, column=COL_GRATIF, value=d['gratif_geral'] or None).border = thin
-            ws.cell(row=row, column=COL_GRATIF).number_format = money_fmt
-            ws.cell(row=row, column=COL_GRATIF).font = norm9
+            # B: Gratif Geral — formula if has atrasados
+            _gn = d.get('gratif_geral_normal', d.get('gratif_geral', 0.0))
+            _ga = d.get('gratif_geral_atrasados', [])
+            c = ws.cell(row=row, column=COL_GRATIF, value=_col_formula(_gn, _ga))
+            c.border = thin
+            c.number_format = money_fmt
+            c.font = norm9
+            if _ga:
+                c.fill = atrasado_fill
+                comment_lines = []
+                if _gn:
+                    comment_lines.append(f"Normal: R$ {_gn:.2f}")
+                for comp_pgto, val in _ga:
+                    pgto_display = BaseTese.format_comp_display(BaseTese.mes_pagamento(comp_pgto))
+                    comment_lines.append(f"Atraso pago em {pgto_display}: R$ {val:.2f}")
+                c.comment = Comment("\n".join(comment_lines), "HoleritePRO")
 
-            # C: GTE
-            ws.cell(row=row, column=COL_GTE, value=d['gte'] or None).border = thin
-            ws.cell(row=row, column=COL_GTE).number_format = money_fmt
-            ws.cell(row=row, column=COL_GTE).font = norm9
+            # C: GTE — formula if has atrasados
+            _gn = d.get('gte_normal', d.get('gte', 0.0))
+            _ga = d.get('gte_atrasados', [])
+            c = ws.cell(row=row, column=COL_GTE, value=_col_formula(_gn, _ga))
+            c.border = thin
+            c.number_format = money_fmt
+            c.font = norm9
+            if _ga:
+                c.fill = atrasado_fill
+                comment_lines = []
+                if _gn:
+                    comment_lines.append(f"Normal: R$ {_gn:.2f}")
+                for comp_pgto, val in _ga:
+                    pgto_display = BaseTese.format_comp_display(BaseTese.mes_pagamento(comp_pgto))
+                    comment_lines.append(f"Atraso pago em {pgto_display}: R$ {val:.2f}")
+                c.comment = Comment("\n".join(comment_lines), "HoleritePRO")
 
-            # D: GAM
-            ws.cell(row=row, column=COL_GAM, value=d['gam'] or None).border = thin
-            ws.cell(row=row, column=COL_GAM).number_format = money_fmt
-            ws.cell(row=row, column=COL_GAM).font = norm9
+            # D: GAM — formula if has atrasados
+            _gn = d.get('gam_normal', d.get('gam', 0.0))
+            _ga = d.get('gam_atrasados', [])
+            c = ws.cell(row=row, column=COL_GAM, value=_col_formula(_gn, _ga))
+            c.border = thin
+            c.number_format = money_fmt
+            c.font = norm9
+            if _ga:
+                c.fill = atrasado_fill
+                comment_lines = []
+                if _gn:
+                    comment_lines.append(f"Normal: R$ {_gn:.2f}")
+                for comp_pgto, val in _ga:
+                    pgto_display = BaseTese.format_comp_display(BaseTese.mes_pagamento(comp_pgto))
+                    comment_lines.append(f"Atraso pago em {pgto_display}: R$ {val:.2f}")
+                c.comment = Comment("\n".join(comment_lines), "HoleritePRO")
 
             # E: Total Vantagens = SUM(B:D)
             c = ws.cell(row=row, column=COL_TOTAL_V)

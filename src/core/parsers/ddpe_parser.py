@@ -115,20 +115,20 @@ class DDPEParser(BaseParser):
         texto = self.get_first_page_text()
 
         # Extract CPF
-        cpf = self._extract_field(texto, "cpf")
+        cpf = self._extract_cpf(texto)
         if not cpf:
             raise ValueError("CPF not found in holerite")
 
-        # Extract Name
-        nome = self._extract_field(texto, "nome")
+        # Extract Name (DDPE table layout: header "Nome" → valor na próxima linha)
+        nome = self._extract_nome_ddpe(texto) or self._extract_field(texto, "nome")
         if not nome:
             raise ValueError("Nome not found in holerite")
 
-        # Extract optional fields
-        cargo = self._extract_field(texto, "cargo")
-        unidade = self._extract_field(texto, "unidade")
-        competencia = self._extract_field(texto, "competencia")
-        data_pagamento = self._extract_field(texto, "data_pagamento")
+        # Extract optional fields (DDPE table layout aware)
+        cargo = self._extract_cargo_ddpe(texto) or self._extract_field(texto, "cargo")
+        unidade = self._extract_unidade_ddpe(texto) or self._extract_field(texto, "unidade")
+        competencia = self._extract_competencia_ddpe(texto) or self._extract_field(texto, "competencia")
+        data_pagamento = self._extract_data_pagamento_ddpe(texto) or self._extract_field(texto, "data_pagamento")
 
         # Normalize competencia format (AAAA-MM)
         if competencia:
@@ -361,57 +361,66 @@ class DDPEParser(BaseParser):
 
     def _extract_totals(self) -> tuple:
         """
-        Extract totals (vencimentos, descontos, líquido)
+        Extrai totais do holerite DDPE.
 
-        Returns:
-            Tuple of (vencimentos, descontos, liquido)
+        O DDPE usa layout de tabela: cabeçalho 'Total Descontos Líquido a Receber'
+        seguido de valores em 1-3 linhas, sem labels inline.
+
+        Estratégia: coleta todos os números após o cabeçalho e busca a tripla
+        (V, D, L) onde V - D ≈ L (tolerância 0.02).
         """
         if not self.paginas:
             return (0.0, 0.0, 0.0)
 
-        vencimentos = 0.0
-        descontos = 0.0
-        liquido = 0.0
-
-        # Patterns to find total lines
-        # Matches: 5000.00, 5.000,00, 100,00, etc.
-        valor_regex = r'[-]?[\d.,]+'
-        vencimentos_pattern = rf'(?:TOTAL\s+)?VENCIMENTOS\s+({valor_regex})'
-        descontos_pattern = rf'(?:TOTAL\s+)?DESCONTOS\s+({valor_regex})'
-        liquido_pattern = rf'(?:LÍQUIDO|LIQUIDO)\s+({valor_regex})'
-
-        # For multipage holerites, totals are usually on the last page
-        # Search from last page backwards
         for page in reversed(self.paginas):
-            texto = page.texto
-            texto_upper = texto.upper()
+            result = self._parse_totals_from_page(page.texto)
+            if result:
+                return result
 
-            # Extract vencimentos
-            if vencimentos == 0.0:
-                match = re.search(vencimentos_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    vencimentos = self._parse_valor(valor_str)
+        return (0.0, 0.0, 0.0)
 
-            # Extract descontos
-            if descontos == 0.0:
-                match = re.search(descontos_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    descontos = self._parse_valor(valor_str)
+    def _parse_totals_from_page(self, texto: str) -> Optional[tuple]:
+        """
+        Busca totais em uma página do DDPE.
+        Encontra o cabeçalho de totais e coleta números das linhas seguintes.
+        Retorna (vencimentos, descontos, liquido) ou None se não encontrado.
+        """
+        # Cabeçalho de totais contém essas palavras juntas
+        header_match = re.search(
+            r'(?:Total\s+)?Descontos.*?L[íi]quido',
+            texto, re.IGNORECASE
+        )
+        if not header_match:
+            return None
 
-            # Extract liquido
-            if liquido == 0.0:
-                match = re.search(liquido_pattern, texto_upper)
-                if match:
-                    valor_str = match.group(1)
-                    liquido = self._parse_valor(valor_str)
+        # Pega as 3 linhas após o cabeçalho
+        rest = texto[header_match.end():]
+        lines_after = rest.split('\n')[:4]
+        following_text = '\n'.join(lines_after)
 
-            # If all three found, stop searching
-            if vencimentos > 0 and descontos >= 0 and liquido > 0:
-                break
+        # Extrai todos os números válidos (formato brasileiro, > 0)
+        raw_numbers = re.findall(r'\b(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})\b', following_text)
+        values = []
+        for n in raw_numbers:
+            v = self._parse_valor(n)
+            if v > 0:
+                values.append(v)
 
-        return (vencimentos, descontos, liquido)
+        if len(values) < 3:
+            return None
+
+        # Busca tripla (V, D, L) onde V - D ≈ L
+        for i, v in enumerate(values):
+            for j, d in enumerate(values):
+                if j == i:
+                    continue
+                for k, l in enumerate(values):
+                    if k == i or k == j:
+                        continue
+                    if v > d and abs(v - d - l) < 0.02:
+                        return (v, d, l)
+
+        return None
 
     def _extract_field(self, texto: str, field_name: str) -> Optional[str]:
         """
@@ -491,6 +500,91 @@ class DDPEParser(BaseParser):
             return float(valor_normalized)
         except (ValueError, AttributeError):
             return 0.0
+
+    def _extract_nome_ddpe(self, texto: str) -> Optional[str]:
+        """Extrai nome do layout de tabela DDPE: 'Nome Reg. Sistema...' → linha seguinte."""
+        m = re.search(r'Nome\s+Reg\..*[\r\n]+([^\r\n]+)', texto, re.IGNORECASE)
+        if m:
+            data_line = m.group(1)
+            # Nome é o início da linha, antes do primeiro código numérico (ex: 09.918.851/01)
+            nome_m = re.match(r'^([A-ZÁÉÍÓÚÂÃÕÊÔa-záéíóúâãõêô\s]+?)(?:\s{2,}|\s+\d{2}\.)', data_line)
+            if nome_m:
+                return nome_m.group(1).strip()
+        return None
+
+    def _extract_cargo_ddpe(self, texto: str) -> Optional[str]:
+        """Extrai cargo do layout DDPE: 'PIS / PASEP Cargo / Função...' → linha seguinte."""
+        m = re.search(r'PIS\s*/\s*PASEP.*?Cargo.*?[\r\n]+([^\r\n]+)', texto, re.IGNORECASE)
+        if m:
+            data_line = m.group(1)
+            # Cargo é o texto após o PIS/PASEP (código numérico inicial)
+            cargo_m = re.match(r'[\d\.\-]+\s+(.+?)(?:\s{3,}|\s+TITULAR|\s+COMISSIONADO|$)', data_line)
+            if cargo_m:
+                return cargo_m.group(1).strip()
+        return None
+
+    def _extract_unidade_ddpe(self, texto: str) -> Optional[str]:
+        """Extrai unidade do layout DDPE: 'Municipio U.C.D. Unidade...' → linha seguinte."""
+        m = re.search(r'Municipio.*?Unidade.*?[\r\n]+([^\r\n]+)', texto, re.IGNORECASE)
+        if m:
+            data_line = m.group(1)
+            # Unidade é o texto após os códigos numéricos iniciais
+            unidade_m = re.match(r'[\d\s]+(.+)', data_line)
+            if unidade_m:
+                return unidade_m.group(1).strip()
+        return None
+
+    def _extract_competencia_ddpe(self, texto: str) -> Optional[str]:
+        """Extrai competência do layout DDPE: 'Tipo da Folha Data Pagamento' → linha seguinte."""
+        m = re.search(r'Tipo da Folha.*?[\r\n]+([^\r\n]+)', texto, re.IGNORECASE)
+        if m:
+            data_line = m.group(1)
+            comp_m = re.search(r'(\d{2}/\d{4})', data_line)
+            if comp_m:
+                return comp_m.group(1)
+        return None
+
+    def _extract_data_pagamento_ddpe(self, texto: str) -> Optional[str]:
+        """Extrai data de pagamento do layout DDPE."""
+        m = re.search(r'Tipo da Folha.*?[\r\n]+([^\r\n]+)', texto, re.IGNORECASE)
+        if m:
+            data_line = m.group(1)
+            date_m = re.search(r'(\d{2}/\d{2}/\d{4})', data_line)
+            if date_m:
+                return date_m.group(1)
+        return None
+
+    def _extract_cpf(self, texto: str) -> Optional[str]:
+        """
+        Extrai CPF do texto do holerite DDPE.
+
+        Suporta dois layouts:
+        1. Mesmo linha:  CPF: 123.456.789-00
+        2. Tabela DDPE:  cabeçalho "C.P.F" na linha acima, valor (147635888/50) no final da linha seguinte
+        """
+        # Layout 1: CPF na mesma linha com label
+        m = re.search(r'C\.?P\.?F[:\s]+(\d{3}\.\d{3}\.\d{3}-\d{2})', texto, re.IGNORECASE)
+        if m:
+            return self._normalize_cpf(m.group(1))
+
+        # Layout 2 (DDPE): header "C.P.F" → valor no final da próxima linha
+        m = re.search(r'C\.P\.F\s*[\r\n]+[^\r\n]*?(\d{9}/\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})', texto, re.IGNORECASE)
+        if m:
+            return self._normalize_cpf(m.group(1))
+
+        # Fallback: padrão numérico DDPE em qualquer lugar do texto
+        m = re.search(r'\b(\d{9}/\d{2})\b', texto)
+        if m:
+            return self._normalize_cpf(m.group(1))
+
+        return None
+
+    def _normalize_cpf(self, cpf_raw: str) -> str:
+        """Normaliza CPF para o formato padrão XXX.XXX.XXX-XX."""
+        digits = re.sub(r'\D', '', cpf_raw)
+        if len(digits) == 11:
+            return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+        return cpf_raw.strip()
 
     def _extract_tipo_folha(self, texto: str) -> TipoFolha:
         """
