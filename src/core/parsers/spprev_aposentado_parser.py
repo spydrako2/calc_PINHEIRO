@@ -56,6 +56,9 @@ class SpprevAposentadoParser(BaseParser):
         """Initialize SPPREV Aposentado parser"""
         super().__init__()
         self.extracted_cabecalho: Optional[CabecalhoHolerite] = None
+        self._base_ir: Optional[float] = None
+        self._base_redutor: Optional[float] = None
+        self._base_contrib_prev: Optional[float] = None
 
     def detect_template(self, texto: str) -> bool:
         """
@@ -113,11 +116,10 @@ class SpprevAposentadoParser(BaseParser):
             confianca=paginas[0].confianca if paginas else 0.95,
         )
 
-        # Set base totals if available (from two-line format)
-        if len(totals) > 3:
-            holerite.base_ir = totals[3]
-            holerite.base_redutor = totals[4]
-            holerite.base_contrib_prev = totals[5]
+        # Set base totals if available (extracted as instance attrs by _extract_totals)
+        holerite.base_ir = self._base_ir
+        holerite.base_redutor = self._base_redutor
+        holerite.base_contrib_prev = self._base_contrib_prev
 
         # Validate extracted data
         self._validate_holerite(holerite)
@@ -334,31 +336,13 @@ class SpprevAposentadoParser(BaseParser):
                     if not monetary_values:
                         continue
 
-                    # Determine if this is a desconto line (two values = vencimento + desconto)
-                    # or single value line
-                    is_desconto = False
-                    if len(monetary_values) >= 2:
-                        # Two values: first is vencimento (may be empty), second is desconto
-                        # If first value appears early and second late, second is desconto
-                        # Simplified: use the LAST value; if the position is far right, it's desconto
-                        val_str = monetary_values[-1]
-                        # Check if last value position is in the "descontos" column area
-                        last_val_pos = rest.rfind(val_str)
-                        first_val_pos = rest.find(monetary_values[0])
-                        if last_val_pos > first_val_pos + len(monetary_values[0]) + 3:
-                            is_desconto = True
-                            val_str = monetary_values[-1]
-                        else:
-                            val_str = monetary_values[0]
-                    else:
-                        val_str = monetary_values[0]
-                        # Single value: check position to determine vencimento vs desconto
-                        # If the value starts past midpoint of original line, likely desconto
-                        val_pos = line.rfind(val_str)
-                        line_len = len(line)
-                        if line_len > 0 and val_pos > line_len * 0.65:
-                            is_desconto = True
+                    # Determine sign using SPPREV code convention:
+                    # codes 001xxx–069xxx = vencimentos (positive)
+                    # codes 070xxx+       = descontos (negative)
+                    is_desconto = self._is_desconto_by_code(codigo_raw)
 
+                    # SPPREV places a value in only one column per verba line; take the first.
+                    val_str = monetary_values[0]
                     valor = self._parse_valor(val_str)
                     if is_desconto:
                         valor = -abs(valor)
@@ -447,6 +431,14 @@ class SpprevAposentadoParser(BaseParser):
         return result
 
     @staticmethod
+    def _is_desconto_by_code(codigo: str) -> bool:
+        """SPPREV convention: codes 070xxx and above are descontos."""
+        try:
+            return int(codigo) >= 70000
+        except ValueError:
+            return False
+
+    @staticmethod
     def _normalize_periodo_range(periodo_str: str):
         """Delegate to BaseParser's static method."""
         from src.core.parsers.base_parser import BaseParser
@@ -483,14 +475,13 @@ class SpprevAposentadoParser(BaseParser):
                             continue
                         valores = re.findall(r"[-]?[\d.,]+", next_line)
                         if len(valores) >= 6:
-                            base_ir = self._parse_valor(valores[-6])
-                            base_redutor = self._parse_valor(valores[-5])
-                            base_contrib_prev = self._parse_valor(valores[-4])
+                            self._base_ir = self._parse_valor(valores[-6])
+                            self._base_redutor = self._parse_valor(valores[-5])
+                            self._base_contrib_prev = self._parse_valor(valores[-4])
                             vencimentos = self._parse_valor(valores[-3])
                             descontos = self._parse_valor(valores[-2])
                             liquido = self._parse_valor(valores[-1])
-                            return (vencimentos, descontos, liquido,
-                                    base_ir, base_redutor, base_contrib_prev)
+                            return (vencimentos, descontos, liquido)
                         elif len(valores) >= 3:
                             vencimentos = self._parse_valor(valores[-3])
                             descontos = self._parse_valor(valores[-2])
