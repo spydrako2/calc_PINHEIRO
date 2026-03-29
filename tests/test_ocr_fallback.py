@@ -19,14 +19,14 @@ class TestOCRFallback:
         assert PDFReader.CONFIANCA_TEXTO == 0.95
         assert PDFReader.LIMIAR_MINIMO_CHARS == 50
 
-    def test_apply_ocr_exists(self):
-        """_apply_ocr method should exist"""
-        assert hasattr(PDFReader, "_apply_ocr")
-        assert callable(getattr(PDFReader, "_apply_ocr"))
+    def test_apply_ocr_fitz_exists(self):
+        """_apply_ocr_fitz method should exist"""
+        assert hasattr(PDFReader, "_apply_ocr_fitz")
+        assert callable(getattr(PDFReader, "_apply_ocr_fitz"))
 
-    def test_apply_ocr_with_none(self):
-        """_apply_ocr should handle None input gracefully"""
-        result = PDFReader._apply_ocr(None)
+    def test_apply_ocr_fitz_with_none(self):
+        """_apply_ocr_fitz should handle None input gracefully"""
+        result = PDFReader._apply_ocr_fitz(None)
         assert result is None
 
     def test_hybrid_extraction_prefers_text(self, pdf_refs_dir):

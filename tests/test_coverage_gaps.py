@@ -10,33 +10,21 @@ class TestCoverageGaps:
 
     def test_ocr_success_path_line_67_69(self):
         """Test when OCR fallback returns valid text (lines 67-69)"""
-        # Mock page with no text but OCR works
-        mock_page = Mock()
-        mock_page.extract_text.return_value = ""  # No text from pdfplumber
-
-        with patch.object(PDFReader, '_apply_ocr', return_value="OCR extracted text"):
-            with patch.object(PDFReader, 'get_page_image', return_value=Mock()):
-                result = PDFReader._extrair_texto(mock_page)
-                # Should get empty string from _extrair_texto, then OCR kicks in
-                assert result == ""
-
-        # Now test full read_pdf path with OCR success
-        mock_pdf = Mock()
-        mock_page_ocr = Mock()
-        mock_page_ocr.extract_text.return_value = ""  # Trigger OCR
-        mock_pdf.pages = [mock_page_ocr]
+        mock_page = MagicMock()
 
         with patch('pathlib.Path.exists', return_value=True):
-            with patch('pdfplumber.open') as mock_open:
-                mock_open.return_value.__enter__.return_value = mock_pdf
-                with patch.object(PDFReader, '_apply_ocr', return_value="OCR text here"):
-                    paginas = PDFReader.read_pdf("dummy.pdf")
+            with patch('fitz.open') as mock_fitz:
+                mock_doc = MagicMock()
+                mock_doc.__iter__ = Mock(return_value=iter([mock_page]))
+                mock_fitz.return_value = mock_doc
+                with patch.object(PDFReader, '_extrair_texto_fitz', return_value=""):
+                    with patch.object(PDFReader, '_apply_ocr_fitz', return_value="OCR text here"):
+                        paginas = PDFReader.read_pdf("dummy.pdf")
 
-                    # Verify OCR path was taken
-                    assert len(paginas) == 1
-                    assert paginas[0].metodo == "OCR"
-                    assert paginas[0].confianca == PDFReader.CONFIANCA_OCR
-                    assert paginas[0].texto == "OCR text here"
+                        assert len(paginas) == 1
+                        assert paginas[0].metodo == "OCR"
+                        assert paginas[0].confianca == PDFReader.CONFIANCA_OCR
+                        assert paginas[0].texto == "OCR text here"
 
     def test_extrair_texto_returns_empty_string_line_102(self):
         """Test when page.extract_text() returns None (line 102)"""
@@ -59,67 +47,65 @@ class TestCoverageGaps:
     def test_read_pdf_exception_handler_line_83_84(self):
         """Test exception path in read_pdf (lines 83-84)"""
         with patch('pathlib.Path.exists', return_value=True):
-            with patch('pdfplumber.open') as mock_open:
-                mock_open.side_effect = Exception("Cannot open PDF")
+            with patch('fitz.open') as mock_fitz:
+                mock_fitz.side_effect = Exception("Cannot open PDF")
 
                 with pytest.raises(Exception) as exc_info:
                     PDFReader.read_pdf("corrupted.pdf")
 
                 assert "Error reading PDF" in str(exc_info.value)
 
-    def test_apply_ocr_returns_none_line_127(self):
-        """Test when get_page_image returns None (line 127)"""
-        mock_page = Mock()
+    def test_apply_ocr_fitz_returns_none_on_error(self):
+        """Test that _apply_ocr_fitz returns None when page.get_pixmap raises"""
+        mock_page = MagicMock()
+        mock_page.get_pixmap.side_effect = Exception("Render failed")
 
-        with patch.object(PDFReader, 'get_page_image', return_value=None):
-            result = PDFReader._apply_ocr(mock_page)
-            assert result is None
-
-    def test_apply_ocr_exception_line_140_141(self):
-        """Test exception handling in _apply_ocr (lines 140-141)"""
-        mock_page = Mock()
-        mock_page.to_image.side_effect = Exception("Image conversion failed")
-
-        result = PDFReader.get_page_image(mock_page)
+        result = PDFReader._apply_ocr_fitz(mock_page)
         assert result is None
 
-    def test_apply_ocr_empty_text_line_131_138(self):
-        """Test when pytesseract returns empty text (lines 131-138)"""
-        mock_page = Mock()
-        mock_image = Mock()
+    def test_apply_ocr_fitz_empty_text(self):
+        """Test when pytesseract returns empty text"""
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_page.get_pixmap.return_value = mock_pix
+        mock_pix.width = 100
+        mock_pix.height = 100
+        mock_pix.samples = b'\x00' * (100 * 100 * 3)
 
-        with patch.object(PDFReader, 'get_page_image', return_value=mock_image):
-            with patch('pytesseract.image_to_string', return_value=""):
-                result = PDFReader._apply_ocr(mock_page)
-                assert result is None
+        with patch('fitz.Matrix'):
+            with patch('PIL.Image.frombytes', return_value=MagicMock()):
+                with patch('pytesseract.image_to_string', return_value=""):
+                    result = PDFReader._apply_ocr_fitz(mock_page)
+                    assert result is None
 
-    def test_apply_ocr_whitespace_only_text(self):
+    def test_apply_ocr_fitz_whitespace_only_text(self):
         """Test when pytesseract returns only whitespace"""
-        mock_page = Mock()
-        mock_image = Mock()
+        mock_page = MagicMock()
+        mock_pix = MagicMock()
+        mock_page.get_pixmap.return_value = mock_pix
 
-        with patch.object(PDFReader, 'get_page_image', return_value=mock_image):
-            with patch('pytesseract.image_to_string', return_value="   \n\n   "):
-                result = PDFReader._apply_ocr(mock_page)
-                assert result is None
+        with patch('fitz.Matrix'):
+            with patch('PIL.Image.frombytes', return_value=MagicMock()):
+                with patch('pytesseract.image_to_string', return_value="   \n\n   "):
+                    result = PDFReader._apply_ocr_fitz(mock_page)
+                    assert result is None
 
     def test_both_extraction_methods_fail(self):
         """Test when both text extraction and OCR fail"""
-        mock_pdf = Mock()
-        mock_page = Mock()
-        mock_page.extract_text.return_value = ""
-        mock_pdf.pages = [mock_page]
+        mock_page = MagicMock()
 
         with patch('pathlib.Path.exists', return_value=True):
-            with patch('pdfplumber.open') as mock_open:
-                mock_open.return_value.__enter__.return_value = mock_pdf
-                with patch.object(PDFReader, '_apply_ocr', return_value=None):
-                    paginas = PDFReader.read_pdf("dummy.pdf")
+            with patch('fitz.open') as mock_fitz:
+                mock_doc = MagicMock()
+                mock_doc.__iter__ = Mock(return_value=iter([mock_page]))
+                mock_fitz.return_value = mock_doc
+                with patch.object(PDFReader, '_extrair_texto_fitz', return_value=""):
+                    with patch.object(PDFReader, '_apply_ocr_fitz', return_value=None):
+                        paginas = PDFReader.read_pdf("dummy.pdf")
 
-                    # Should fall back to low confidence TEXTO
-                    assert len(paginas) == 1
-                    assert paginas[0].metodo == "TEXTO"
-                    assert paginas[0].confianca == 0.3
+                        assert len(paginas) == 1
+                        assert paginas[0].metodo == "TEXTO"
+                        assert paginas[0].confianca == 0.3
 
     def test_metadata_extraction_error_path_line_220_221(self):
         """Test exception handling in extrair_metadados_basicos (lines 220-221)"""
@@ -199,38 +185,31 @@ class TestCoverageGaps:
 
     def test_read_pdf_multiple_pages_with_mixed_methods(self):
         """Test reading PDF with pages using different extraction methods"""
-        mock_pdf = Mock()
-
-        # Page 1: Text extraction works
-        page1 = Mock()
-        page1.extract_text.return_value = "Page 1 has lots of text" * 10
-
-        # Page 2: No text, OCR fallback
-        page2 = Mock()
-        page2.extract_text.return_value = ""
-
-        # Page 3: No text, OCR fails
-        page3 = Mock()
-        page3.extract_text.return_value = ""
-
-        mock_pdf.pages = [page1, page2, page3]
+        page1 = MagicMock()
+        page2 = MagicMock()
+        page3 = MagicMock()
 
         with patch('pathlib.Path.exists', return_value=True):
-            with patch('pdfplumber.open') as mock_open:
-                mock_open.return_value.__enter__.return_value = mock_pdf
-                with patch.object(PDFReader, '_apply_ocr') as mock_ocr:
-                    # Page 2 gets OCR text, page 3 gets None
-                    mock_ocr.side_effect = ["OCR text for page 2", None]
+            with patch('fitz.open') as mock_fitz:
+                mock_doc = MagicMock()
+                mock_doc.__iter__ = Mock(return_value=iter([page1, page2, page3]))
+                mock_fitz.return_value = mock_doc
 
-                    paginas = PDFReader.read_pdf("dummy.pdf")
+                # Page 1 has text, pages 2/3 don't
+                text_side_effects = ["Page 1 has lots of text" * 3, "", ""]
+                with patch.object(PDFReader, '_extrair_texto_fitz', side_effect=text_side_effects):
+                    with patch.object(PDFReader, '_apply_ocr_fitz') as mock_ocr:
+                        mock_ocr.side_effect = ["OCR text for page 2", None]
 
-                    assert len(paginas) == 3
-                    assert paginas[0].metodo == "TEXTO"
-                    assert paginas[0].confianca == 0.95
-                    assert paginas[1].metodo == "OCR"
-                    assert paginas[1].confianca == 0.70
-                    assert paginas[2].metodo == "TEXTO"
-                    assert paginas[2].confianca == 0.3
+                        paginas = PDFReader.read_pdf("dummy.pdf")
+
+                        assert len(paginas) == 3
+                        assert paginas[0].metodo == "TEXTO"
+                        assert paginas[0].confianca == 0.95
+                        assert paginas[1].metodo == "OCR"
+                        assert paginas[1].confianca == 0.70
+                        assert paginas[2].metodo == "TEXTO"
+                        assert paginas[2].confianca == 0.3
 
     def test_is_continuation_page_edge_cases(self):
         """Test continuation detection with edge cases"""
@@ -263,19 +242,16 @@ class TestCoverageGaps:
 
     def test_pagination_integrity(self):
         """Test that page numbers are assigned correctly"""
-        mock_pdf = Mock()
-        pages_list = [Mock() for _ in range(5)]
-
-        for page in pages_list:
-            page.extract_text.return_value = "some text"
-
-        mock_pdf.pages = pages_list
+        pages_list = [MagicMock() for _ in range(5)]
 
         with patch('pathlib.Path.exists', return_value=True):
-            with patch('pdfplumber.open') as mock_open:
-                mock_open.return_value.__enter__.return_value = mock_pdf
-                paginas = PDFReader.read_pdf("dummy.pdf")
+            with patch('fitz.open') as mock_fitz:
+                mock_doc = MagicMock()
+                mock_doc.__iter__ = Mock(return_value=iter(pages_list))
+                mock_fitz.return_value = mock_doc
+                with patch.object(PDFReader, '_extrair_texto_fitz', return_value="text " * 20):
+                    paginas = PDFReader.read_pdf("dummy.pdf")
 
-                assert len(paginas) == 5
-                for i, pagina in enumerate(paginas, 1):
-                    assert pagina.numero == i
+                    assert len(paginas) == 5
+                    for i, pagina in enumerate(paginas, 1):
+                        assert pagina.numero == i
