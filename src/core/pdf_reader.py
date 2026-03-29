@@ -1,9 +1,10 @@
 """
 PDF Reader with hybrid text/OCR extraction
-Motor primário: pdfplumber — compatível com todos os ambientes
+Motor primário: PyMuPDF (fitz) — ~10-20x mais rápido que pdfplumber
 Fallback OCR: pytesseract para páginas escaneadas
 """
-import pdfplumber
+import fitz  # PyMuPDF
+import pdfplumber  # mantido apenas para extrair_metadados_basicos
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ class PaginaExtraida:
 
 
 class PDFReader:
-    """Read PDFs with pdfplumber (iterative, no memory overflow)"""
+    """Read PDFs with PyMuPDF (iterative, no memory overflow)"""
 
     # Text extraction confidence thresholds
     CONFIANCA_TEXTO = 0.95
@@ -33,7 +34,7 @@ class PDFReader:
     @staticmethod
     def read_pdf(pdf_path: str) -> List[PaginaExtraida]:
         """
-        Read PDF page by page usando pdfplumber — compatível com todos os ambientes.
+        Read PDF page by page usando PyMuPDF (fitz) — motor rápido.
         Fallback para OCR via pytesseract em páginas sem texto suficiente.
 
         Args:
@@ -53,35 +54,78 @@ class PDFReader:
         paginas = []
 
         try:
-            with pdfplumber.open(str(pdf_path)) as pdf:
-                for i, page in enumerate(pdf.pages, 1):
-                    texto = PDFReader._extrair_texto(page)
+            doc = fitz.open(str(pdf_path))
+            for i, page in enumerate(doc, 1):
+                texto = PDFReader._extrair_texto_fitz(page)
 
-                    if len(texto) >= PDFReader.LIMIAR_MINIMO_CHARS:
-                        metodo = "TEXTO"
-                        confianca = PDFReader.CONFIANCA_TEXTO
+                if len(texto) >= PDFReader.LIMIAR_MINIMO_CHARS:
+                    metodo = "TEXTO"
+                    confianca = PDFReader.CONFIANCA_TEXTO
+                else:
+                    texto_ocr = PDFReader._apply_ocr_fitz(page)
+                    if texto_ocr:
+                        texto = texto_ocr
+                        metodo = "OCR"
+                        confianca = PDFReader.CONFIANCA_OCR
                     else:
-                        # Fallback OCR: renderizar página como imagem e usar tesseract
-                        texto_ocr = PDFReader._apply_ocr(page)
-                        if texto_ocr:
-                            texto = texto_ocr
-                            metodo = "OCR"
-                            confianca = PDFReader.CONFIANCA_OCR
-                        else:
-                            metodo = "TEXTO"
-                            confianca = 0.3
+                        metodo = "TEXTO"
+                        confianca = 0.3
 
-                    paginas.append(PaginaExtraida(
-                        numero=i,
-                        texto=texto,
-                        metodo=metodo,
-                        confianca=confianca,
-                    ))
+                paginas.append(PaginaExtraida(
+                    numero=i,
+                    texto=texto,
+                    metodo=metodo,
+                    confianca=confianca,
+                ))
+            doc.close()
 
         except Exception as e:
             raise Exception(f"Error reading PDF {pdf_path}: {str(e)}")
 
         return paginas
+
+    @staticmethod
+    def _extrair_texto_fitz(page) -> str:
+        """Extrai texto de página fitz agrupando palavras por linha (Y → X).
+
+        Usa get_text('words') para reconstruir linhas com a mesma lógica do pdfplumber:
+        palavras com Y próximo (<= 3px de diferença) são agrupadas na mesma linha,
+        depois ordenadas por X para preservar a ordem das colunas.
+        """
+        try:
+            from collections import defaultdict
+            words = page.get_text("words")  # (x0, y0, x1, y1, word, ...)
+            # Agrupar por Y arredondado (tolerância de pixel natural do round())
+            line_map = defaultdict(list)
+            for w in words:
+                y_key = round(w[1])
+                line_map[y_key].append((w[0], w[4]))
+            lines = []
+            for y in sorted(line_map.keys()):
+                words_sorted = sorted(line_map[y], key=lambda x: x[0])
+                linha = " ".join(w for _, w in words_sorted)
+                if linha.strip():
+                    lines.append(linha)
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _apply_ocr_fitz(page) -> Optional[str]:
+        """OCR via renderização de página fitz → imagem → pytesseract."""
+        try:
+            import pytesseract
+            from PIL import Image
+            mat = fitz.Matrix(2, 2)  # 2x scale para melhor OCR
+            pix = page.get_pixmap(matrix=mat)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            texto = pytesseract.image_to_string(img)
+            if not texto or len(texto.strip()) == 0:
+                return None
+            lines = [line.strip() for line in texto.split("\n")]
+            return "\n".join(line for line in lines if line) or None
+        except Exception:
+            return None
 
     # --- Métodos legados mantidos para compatibilidade ---
 
@@ -96,22 +140,6 @@ class PDFReader:
             return "\n".join(line for line in lines if line)
         except Exception:
             return ""
-
-    @staticmethod
-    def _apply_ocr(page) -> Optional[str]:
-        """Legado: OCR via pdfplumber page."""
-        try:
-            image = PDFReader.get_page_image(page)
-            if image is None:
-                return None
-            texto = pytesseract.image_to_string(image)
-            if not texto or len(texto.strip()) == 0:
-                return None
-            lines = [line.strip() for line in texto.split("\n")]
-            texto_limpo = "\n".join(line for line in lines if line)
-            return texto_limpo if texto_limpo else None
-        except Exception:
-            return None
 
     @staticmethod
     def get_page_image(page):

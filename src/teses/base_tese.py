@@ -22,6 +22,9 @@ class BaseTese(ABC):
     verba_nome: str = ""            # Display name
     quinquenio_codigo: str = "009001"
 
+    # Codes that indicate the server has Sexta Parte (permanent right once seen)
+    VERBAS_SEXTA_PARTE = {"010001", "010002", "010003", "010010", "010021"}
+
     def processar(self, pdf_path: str) -> dict:
         """
         Full pipeline: read PDF → extract → calculate.
@@ -53,8 +56,10 @@ class BaseTese(ABC):
             'normal': 0.0,
             'atrasados': [],
             'quinquenios': 0,
+            'tem_sexta_parte': False,
         })
         quinq_by_comp = {}
+        sexta_parte_comp = None  # first comp where sexta parte was detected
 
         for p in pages:
             if _ddpe.detect_template(p.texto):
@@ -96,6 +101,10 @@ class BaseTese(ABC):
                     if q > 0:
                         quinq_by_comp[comp] = q
 
+                elif v.codigo in self.VERBAS_SEXTA_PARTE:
+                    if sexta_parte_comp is None or comp < sexta_parte_comp:
+                        sexta_parte_comp = comp
+
         # Fill quinquenios — periods are now keyed by payment month (comp+1)
         # Compare mes_pagamento(c) against pay_key to stay aligned
         all_comp_keys = sorted(quinq_by_comp.keys())
@@ -110,7 +119,14 @@ class BaseTese(ABC):
                 best_q = quinq_by_comp[all_comp_keys[0]]
             periods[pay_key]['quinquenios'] = best_q
 
-        # Calculate totals and reflexo
+        # Propagate sexta parte — permanent right from first occurrence onwards
+        if sexta_parte_comp is not None:
+            primeiro_pay = self.mes_pagamento(sexta_parte_comp)
+            for pay_key in periods:
+                if pay_key >= primeiro_pay:
+                    periods[pay_key]['tem_sexta_parte'] = True
+
+        # Calculate totals and reflexo (including 6ª parte when applicable)
         total_verba = 0.0
         total_reflexo = 0.0
         for per in periods:
@@ -118,8 +134,10 @@ class BaseTese(ABC):
             d['total'] = d['normal'] + sum(v for _, v in d['atrasados'])
             pct = d['quinquenios'] * 5 / 100
             d['reflexo'] = d['total'] * pct
+            d['reflexo_6p'] = d['reflexo'] / 6 if d['tem_sexta_parte'] else 0.0
+            d['total_devido'] = d['reflexo'] + d['reflexo_6p']
             total_verba += d['total']
-            total_reflexo += d['reflexo']
+            total_reflexo += d['total_devido']
 
         return {
             'nome_cliente': nome_cliente,
