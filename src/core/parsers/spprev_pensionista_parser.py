@@ -325,22 +325,10 @@ class SpprevPensionistaParser(BaseParser):
                     if not monetary_values:
                         continue
 
-                    # Determine vencimento vs desconto by position
-                    is_desconto = False
-                    if len(monetary_values) >= 2:
-                        last_val_pos = rest.rfind(monetary_values[-1])
-                        first_val_pos = rest.find(monetary_values[0])
-                        if last_val_pos > first_val_pos + len(monetary_values[0]) + 3:
-                            is_desconto = True
-                            val_str = monetary_values[-1]
-                        else:
-                            val_str = monetary_values[0]
-                    else:
-                        val_str = monetary_values[0]
-                        val_pos = line.rfind(val_str)
-                        line_len = len(line)
-                        if line_len > 0 and val_pos > line_len * 0.65:
-                            is_desconto = True
+                    # Determine vencimento vs desconto by code range
+                    # SPPREV convention: codes 070xxx and above are descontos
+                    is_desconto = self._is_desconto_by_code(codigo_raw)
+                    val_str = monetary_values[0]
 
                     valor = self._parse_valor(val_str)
                     if is_desconto:
@@ -499,6 +487,14 @@ class SpprevPensionistaParser(BaseParser):
                 return date_clean
 
         return date_clean
+
+    @staticmethod
+    def _is_desconto_by_code(codigo: str) -> bool:
+        """SPPREV convention: codes 070xxx and above are descontos."""
+        try:
+            return int(codigo) >= 70000
+        except ValueError:
+            return False
 
     def _parse_valor(self, valor_str: str) -> float:
         """

@@ -99,9 +99,9 @@ class TestSpprevPensionistaParserProventos:
         verbas = parser._extract_verbas()
 
         # Check values are extracted
-        assert all(v.valor >= 0 for v in verbas)
+        # Vencimentos (001xxx) are positive; descontos (070xxx+) are negative
         assert any(v.valor == 5604.34 for v in verbas)
-        assert any(v.valor == 173.61 for v in verbas)
+        assert any(v.valor == -173.61 for v in verbas)
 
     def test_verba_codigo_extraction(self, parser, pensionista_with_verbas):
         """Should extract 6-digit codigo"""
