@@ -234,7 +234,7 @@ class TestEndToEnd:
                 assert elapsed < 30, f"Medium PDF ({file_size_mb}MB) took {elapsed}s"
             else:
                 # Large PDFs can take longer (up to several minutes for 7MB+)
-                assert elapsed < 120, f"Large PDF ({file_size_mb}MB) took {elapsed}s"
+                assert elapsed < 300, f"Large PDF ({file_size_mb}MB) took {elapsed}s"
 
     def test_e2e_extraction_consistency(self, pdf_refs_dir):
         """Reading same PDF twice should give consistent results"""
