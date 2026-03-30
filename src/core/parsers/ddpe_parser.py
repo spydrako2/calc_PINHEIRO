@@ -168,10 +168,13 @@ class DDPEParser(BaseParser):
         """
         Extract earnings/deductions (verbas) from all pages.
 
-        DDPE full format:
+        DDPE full format (single-line — pdfplumber):
         12.015  ADIC.LOCAL EXERC.CAR.POL/DELEG.  A  PERC.  01/09/2007 A 30/09/2007  329,65+
         70.006  IAMSPE                            A  2,00  PERC.  01/09/2007 A 30/09/2007  6,59-
-        01.001  SALÁRIO                           N         01/02/2026 A 28/02/2026  5.000,00+
+
+        DDPE multi-line format (PyMuPDF — value on separate line above code):
+        2.007,99+
+        01.001 SALARIO BASE N VALOR 03/2013
 
         Also supports simplified format (legacy mocks):
         01.001  SALÁRIO  5.000,00
@@ -192,6 +195,8 @@ class DDPEParser(BaseParser):
         # Value at end with optional +/- sign
         valor_end_full = re.compile(r'([-]?\d[\d.,]*\d)\s*([+\-])\s*$')
         valor_end_simple = re.compile(r'([-]?\d[\d.,]*\d)\s*$')
+        # Standalone value line (PyMuPDF multi-line: value on its own line)
+        standalone_valor_re = re.compile(r'^([-]?\d[\d.,]*\d)\s*([+\-])\s*$')
 
         # Detect context for fallback natureza (section-based)
         is_atrasado_section = False
@@ -199,6 +204,7 @@ class DDPEParser(BaseParser):
 
         for page in self.paginas:
             lines = page.texto.split('\n')
+            pending_valor = None  # (valor_str, sinal) from standalone line above
 
             for line in lines:
                 line_upper = line.upper()
@@ -208,26 +214,35 @@ class DDPEParser(BaseParser):
                 if 'ATRASADO' in line_upper and not re.match(r'^\d{2}\.?\d{3}', line_stripped):
                     is_atrasado_section = True
                     is_reposicao_section = False
+                    pending_valor = None
                     continue
                 elif ('REPOSIÇÃO' in line_upper or 'REPOSICAO' in line_upper) and not re.match(r'^\d{2}\.?\d{3}', line_stripped):
                     is_reposicao_section = True
                     is_atrasado_section = False
+                    pending_valor = None
                     continue
                 elif 'TOTAL' in line_upper or 'LÍQUIDO' in line_upper:
                     break
 
                 if not line_stripped or 'CÓDIGO' in line_upper or 'DENOMINAÇÃO' in line_upper:
+                    pending_valor = None
                     continue
 
                 codigo_match = codigo_start.match(line_stripped)
                 if not codigo_match:
+                    # Check if this is a standalone value line (e.g. "2.007,99+")
+                    sv_match = standalone_valor_re.match(line_stripped)
+                    if sv_match:
+                        pending_valor = (sv_match.group(1), sv_match.group(2))
+                    else:
+                        pending_valor = None
                     continue
 
                 try:
                     codigo_raw = codigo_match.group(1)
                     rest = line_stripped[codigo_match.end():]
 
-                    # Try full format first: value with +/- sign at end
+                    # Try full format first: value with +/- sign at end of same line
                     valor_match = valor_end_full.search(rest)
                     if valor_match:
                         valor_str = valor_match.group(1)
@@ -239,6 +254,18 @@ class DDPEParser(BaseParser):
                             valor = abs(valor)
                         middle = rest[:valor_match.start()].strip()
                         parsed = self._parse_ddpe_middle(middle)
+                        pending_valor = None
+                    elif pending_valor:
+                        # PyMuPDF multi-line: value was on standalone line above
+                        valor_str, sinal = pending_valor
+                        valor = self._parse_valor(valor_str)
+                        if sinal == '-':
+                            valor = -abs(valor)
+                        else:
+                            valor = abs(valor)
+                        middle = rest.strip()
+                        parsed = self._parse_ddpe_middle(middle)
+                        pending_valor = None
                     else:
                         # Simplified format: no +/- sign
                         valor_match = valor_end_simple.search(rest)
