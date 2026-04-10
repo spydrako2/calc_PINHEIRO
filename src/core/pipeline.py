@@ -129,7 +129,8 @@ class Pipeline:
         processed = []
         for template_type, pages in groups:
             try:
-                parser = self.detector.get_parser(template_type)
+                first_text = pages[0].texto if pages else ""
+                parser = self.detector.get_parser_for_text(template_type, first_text)
                 holerite = parser.parse(pages)
 
                 # Apply temporal allocation

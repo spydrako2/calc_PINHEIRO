@@ -112,14 +112,50 @@ class PDFReader:
 
     @staticmethod
     def _apply_ocr_fitz(page) -> Optional[str]:
-        """OCR via renderização de página fitz → imagem → pytesseract."""
+        """OCR via renderização de página fitz → imagem → pytesseract.
+
+        Usa 3x scale, conversão para escala de cinza com reforço de contraste
+        e configuração explícita do caminho do tesseract para Windows.
+        Corta automaticamente barras de UI de capturas mobile (top/bottom ~5%).
+        """
         try:
             import pytesseract
-            from PIL import Image
-            mat = fitz.Matrix(2, 2)  # 2x scale para melhor OCR
+            from PIL import Image, ImageEnhance
+
+            # Configurar caminho do Tesseract no Windows se não estiver no PATH
+            import shutil
+            if not shutil.which("tesseract"):
+                import os
+                pytesseract.pytesseract.tesseract_cmd = (
+                    os.environ.get("TESSERACT_CMD")
+                    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                )
+
+            # Renderizar em 3x para melhor qualidade OCR
+            mat = fitz.Matrix(3, 3)
             pix = page.get_pixmap(matrix=mat)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            texto = pytesseract.image_to_string(img)
+
+            # Cortar barras de UI mobile (status bar topo ~5%, navbar rodapé ~8%)
+            w, h = img.size
+            img = img.crop((0, int(h * 0.05), w, int(h * 0.92)))
+
+            # Escala de cinza + contraste aumentado para melhor leitura
+            img = img.convert("L")
+            img = ImageEnhance.Contrast(img).enhance(2.0)
+
+            # Configurar tessdata local (~\tessdata) via variável de ambiente
+            import os
+            tessdata_local = os.path.join(os.path.expanduser("~"), "tessdata")
+            lang = "por"
+            if os.path.isdir(tessdata_local) and os.path.isfile(
+                os.path.join(tessdata_local, "por.traineddata")
+            ):
+                os.environ.setdefault("TESSDATA_PREFIX", tessdata_local)
+            else:
+                lang = "eng"
+
+            texto = pytesseract.image_to_string(img, lang=lang, config="--oem 3 --psm 6")
             if not texto or len(texto.strip()) == 0:
                 return None
             lines = [line.strip() for line in texto.split("\n")]
