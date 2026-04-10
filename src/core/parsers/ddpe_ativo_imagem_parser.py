@@ -233,36 +233,73 @@ class DDPEAtivoImagemParser(DDPEParser):
 
         return None
 
+    # Mapa de correção OCR para dígitos em competência
+    _COMP_OCR_MAP = str.maketrans('COcoSslIiGgBb', '0000551116688')
+
     def _extract_competencia_ddpe(self, texto: str) -> Optional[str]:
         """
         Extrai competência de holerites OCR.
 
-        No OCR o padrão 'Tipo da Folha...' pode estar garbled.
-        Busca MM/YYYY em linhas que contenham 'NORMAL', 'FOLHA' ou 'DDA'.
+        OCR garble típico na linha de competência:
+        - "FOUHA MORMAL - C6/2077" → FOLHA NORMAL - 06/2021
+        - "FOUHA MORMAL - 072021" → 07/2021
+        - "FOUHA MORMAL - 112021" → 11/2021
+
+        Estratégias em cascata:
+        1. Método pai (layout texto limpo)
+        2. Linha FOLHA/NORMAL com MM/YYYY ou MMYYYY
+        3. Idem com correção OCR de letras→dígitos (C→0, O→0)
+        4. Buscar 6 dígitos consecutivos e interpretar como MMYYYY
         """
-        # Tentar método pai primeiro
+        # Estratégia 1: método pai
         result = super()._extract_competencia_ddpe(texto)
         if result:
             return result
 
-        # Fallback OCR: linha com FOLHA/NORMAL + padrão de data
+        # Encontrar linha de competência (FOLHA/NORMAL/FOUHA/MORMAL)
+        comp_line = None
         for linha in texto.split("\n"):
-            if re.search(r'FOLHA|NORMAL|DDA', linha, re.IGNORECASE):
-                m = re.search(r'(\d{2}/\d{4})', linha)
-                if m:
-                    return m.group(1)
-                # OCR pode omitir a barra: "072021" → "07/2021"
-                m = re.search(r'\b(\d{2})(\d{4})\b', linha)
-                if m and 1 <= int(m.group(1)) <= 12 and int(m.group(2)) >= 2000:
-                    return f"{m.group(1)}/{m.group(2)}"
+            if re.search(r'FO[UL]HA|MORMAL|NORMAL|FOLHA', linha, re.IGNORECASE):
+                # Excluir linhas de verbas que mencionam FUNDAMENTAL etc.
+                if not re.search(r'FUNDAMENTAL|HORSUPL|DOCENTE|CARGA|SEXTA|ADIC', linha, re.IGNORECASE):
+                    comp_line = linha
+                    break
 
-        # Busca genérica por padrão de competência em todo o texto
-        for linha in texto.split("\n"):
-            m = re.search(r'\b(\d{2}/\d{4})\b', linha)
-            if m:
-                mes, ano = m.group(1).split('/')
-                if 1 <= int(mes) <= 12 and int(ano) >= 2000:
-                    return m.group(1)
+        if not comp_line:
+            return None
+
+        # Estratégia 2: MM/YYYY direto (com barra)
+        m = re.search(r'(\d{2})/(\d{4})', comp_line)
+        if m and 1 <= int(m.group(1)) <= 12 and 2000 <= int(m.group(2)) <= 2030:
+            return f"{m.group(1)}/{m.group(2)}"
+
+        # Estratégia 3: MMYYYY sem barra (6 dígitos)
+        m = re.search(r'\b(\d{2})(\d{4})\b', comp_line)
+        if m and 1 <= int(m.group(1)) <= 12 and 2000 <= int(m.group(2)) <= 2030:
+            return f"{m.group(1)}/{m.group(2)}"
+
+        # Estratégia 4: Corrigir letras OCR → dígitos e tentar de novo
+        # Ex: "C6/2077" → "06/2077", depois extrair 06 como mês
+        comp_fixed = comp_line.translate(self._COMP_OCR_MAP)
+
+        m = re.search(r'(\d{2})/(\d{4})', comp_fixed)
+        if m and 1 <= int(m.group(1)) <= 12 and 2000 <= int(m.group(2)) <= 2030:
+            return f"{m.group(1)}/{m.group(2)}"
+
+        m = re.search(r'\b(\d{2})(\d{4})\b', comp_fixed)
+        if m and 1 <= int(m.group(1)) <= 12 and 2000 <= int(m.group(2)) <= 2030:
+            return f"{m.group(1)}/{m.group(2)}"
+
+        # Estratégia 5: Coletar todos os dígitos após "-" e tentar MMYYYY
+        after_dash = re.split(r'-', comp_fixed)
+        if len(after_dash) >= 2:
+            digits = ''.join(re.findall(r'\d', after_dash[-1]))
+            if len(digits) >= 6:
+                mm, yyyy = digits[:2], digits[2:6]
+                if 1 <= int(mm) <= 12 and 2000 <= int(yyyy) <= 2030:
+                    return f"{mm}/{yyyy}"
+
+        return None
 
         return None
 
