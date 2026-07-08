@@ -38,4 +38,5 @@ coverage.xml
 
 # Project outputs & sensitive data
 output_qa/
+output/
 docs/referencias/

@@ -18,6 +18,7 @@ from src.teses import TESES_DISPONIVEIS
 from src.export.xlsx_writer import write_reflexo_xlsx
 from src.export.iamspe_writer import write_iamspe_xlsx
 from src.export.apeoesp_writer import write_apeoesp_xlsx
+from src.export.chs_writer import write_chs_xlsx
 from src.teses.base_tese import BaseTese
 
 
@@ -329,6 +330,48 @@ def main():
             tmp_xlsx = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
             tmp_xlsx.close()
             write_iamspe_xlsx(resultado, tmp_xlsx.name)
+
+        # ---- CHS: Carga Horária Suplementar sobre Piso Docente ----
+        elif resultado.get('tese_tipo') == 'chs':
+            vinculo = resultado.get('vinculo', 'efetivo')
+            situacao = resultado.get('situacao', 'ativo')
+            vinculo_label = {'efetivo': 'Efetivo', 'lei500': 'Lei 500/74'}.get(vinculo, vinculo)
+            situacao_label = {'ativo': 'ATIVO', 'inativo': 'INATIVO'}.get(situacao, situacao)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Meses Extraídos", n_meses)
+            with col2:
+                st.metric("Vínculo", vinculo_label)
+            with col3:
+                st.metric("Situação Atual", situacao_label)
+
+            if sorted_p:
+                first = BaseTese.format_comp_display(sorted_p[0])
+                last = BaseTese.format_comp_display(sorted_p[-1])
+                st.caption(
+                    f"Período: {first} a {last} — planilha será preenchida na aba "
+                    f"**Cálculo {situacao_label}**"
+                )
+
+            with st.expander("📋 Preview dos dados", expanded=False):
+                preview_data = []
+                for per in sorted_p:
+                    d = periodos[per]
+                    preview_data.append({
+                        "Competência": BaseTese.format_comp_display(per),
+                        "Salário Base": f"R$ {d['salario_base']:,.2f}" if d['salario_base'] else "-",
+                        "Piso": f"R$ {d['piso']:,.2f}" if d['piso'] else "-",
+                        "Jornada (h)": d['jornada_horas'] if d['jornada_horas'] else "-",
+                        "Horas Supl.": d['horas_suplementares'] if d['horas_suplementares'] else "-",
+                        "Quinq.": d['quinquenios'],
+                        "6ª Parte": "Sim" if d['tem_sexta_parte'] else "Não",
+                    })
+                st.dataframe(preview_data, use_container_width=True, hide_index=True)
+
+            tmp_xlsx = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+            tmp_xlsx.close()
+            write_chs_xlsx(resultado, tmp_xlsx.name)
 
         # ---- APEOESP: quinquênio + sexta parte sobre gratificações ----
         elif resultado.get('tese_tipo') == 'apeoesp':
