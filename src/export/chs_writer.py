@@ -68,6 +68,11 @@ def _all_months(sorted_periods: list) -> list:
         return []
     y, m = int(sorted_periods[0][:4]), int(sorted_periods[0][5:7])
     ey, em = int(sorted_periods[-1][:4]), int(sorted_periods[-1][5:7])
+    # Se o último dado cai no ano corrente, completa o bloco anual até
+    # dezembro (linhas em branco nos meses ainda sem holerite) — deixa o
+    # fechamento do ano/13º coerente; o estagiário oculta as linhas vazias.
+    if ey == datetime.now().year:
+        em = 12
     out = []
     while (y, m) <= (ey, em):
         out.append(f"{y:04d}-{m:02d}")
