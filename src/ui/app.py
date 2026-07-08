@@ -358,10 +358,12 @@ def main():
                 preview_data = []
                 for per in sorted_p:
                     d = periodos[per]
+                    salario_base = d['salario_base_normal'] + sum(v for _, v in d['salario_base_atrasados'])
+                    piso = d['piso_normal'] + sum(v for _, v in d['piso_atrasados'])
                     preview_data.append({
                         "Competência": BaseTese.format_comp_display(per),
-                        "Salário Base": f"R$ {d['salario_base']:,.2f}" if d['salario_base'] else "-",
-                        "Piso": f"R$ {d['piso']:,.2f}" if d['piso'] else "-",
+                        "Salário Base": f"R$ {salario_base:,.2f}" if salario_base else "-",
+                        "Piso": f"R$ {piso:,.2f}" if piso else "-",
                         "Jornada (h)": d['jornada_horas'] if d['jornada_horas'] else "-",
                         "Horas Supl.": d['horas_suplementares'] if d['horas_suplementares'] else "-",
                         "Quinq.": d['quinquenios'],
