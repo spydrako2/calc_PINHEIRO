@@ -70,12 +70,14 @@ class TeseCHS(BaseTese):
         nome_cliente = "UNKNOWN"
         vinculo = None
 
+        # Cada verba de valor guarda normal e atrasados SEPARADOS, para que o
+        # writer emita fórmula auditável (=normal+atraso1+...). Atrasados são
+        # realocados ao mês de competência a que se referem (mesma lógica da
+        # ação de quinquênio em BaseTese), não ao mês em que foram pagos.
         raw: dict = defaultdict(lambda: {
-            'salario_base_verba': 0.0,
-            'piso_valor': 0.0,
-            'piso_qtd': None,
-            'chs_por_codigo': {},
-            'chs_qtd_por_codigo': {},
+            'salario_base': {'normal': 0.0, 'atrasados': []},
+            'piso': {'normal': 0.0, 'atrasados': [], 'qtd_normal': None, 'qtd_atraso': None},
+            'chs': {},   # codigo -> {'normal': 0.0, 'atrasados': [], 'qtd': None}
             'quinquenios': 0,
             'tem_sexta_parte': False,
         })
@@ -109,26 +111,37 @@ class TeseCHS(BaseTese):
             verbas = pi._extract_verbas()
 
             for v in verbas:
-                if v.natureza.value != 'N':
+                nat = v.natureza.value
+                # Só Normal, Atrasado e Reposição entram no cálculo
+                # (Devolução/Estorno ficam de fora, como antes).
+                if nat not in ('N', 'A', 'R'):
                     continue
 
                 if v.codigo in CODIGOS_SALARIO_BASE:
-                    raw[pay_key]['salario_base_verba'] += v.valor
+                    for pk, val in self._distribuir_por_pagamento(v, comp):
+                        self._add(raw[pk]['salario_base'], nat, comp, val)
                 elif v.codigo == CODIGO_PISO:
-                    raw[pay_key]['piso_valor'] += v.valor
-                    if v.quantidade:
-                        raw[pay_key]['piso_qtd'] = v.quantidade
+                    for pk, val in self._distribuir_por_pagamento(v, comp):
+                        self._add(raw[pk]['piso'], nat, comp, val)
+                        if v.quantidade:
+                            key = 'qtd_normal' if nat == 'N' else 'qtd_atraso'
+                            raw[pk]['piso'][key] = v.quantidade
                 elif v.codigo in CHS_TODOS:
-                    d = raw[pay_key]
-                    d['chs_por_codigo'][v.codigo] = d['chs_por_codigo'].get(v.codigo, 0.0) + v.valor
-                    if v.quantidade:
-                        d['chs_qtd_por_codigo'][v.codigo] = v.quantidade
+                    for pk, val in self._distribuir_por_pagamento(v, comp):
+                        bucket = raw[pk]['chs'].setdefault(
+                            v.codigo, {'normal': 0.0, 'atrasados': [], 'qtd': None}
+                        )
+                        self._add(bucket, nat, comp, val)
+                        if nat == 'N' and v.quantidade:
+                            bucket['qtd'] = v.quantidade
                 elif self._is_quinquenio_verba(v) or v.codigo == CODIGO_QUINQ_CHS:
-                    q = self._extract_quinquenios(v)
-                    if q > 0 and q > raw[pay_key]['quinquenios']:
-                        raw[pay_key]['quinquenios'] = q
+                    if nat == 'N':
+                        q = self._extract_quinquenios(v)
+                        if q > 0 and q > raw[pay_key]['quinquenios']:
+                            raw[pay_key]['quinquenios'] = q
                 elif v.codigo == CODIGO_SEXTA_CHS or v.codigo in self.VERBAS_SEXTA_PARTE:
-                    raw[pay_key]['tem_sexta_parte'] = True
+                    if nat == 'N':
+                        raw[pay_key]['tem_sexta_parte'] = True
 
         if vinculo is None:
             vinculo = 'efetivo'
@@ -166,59 +179,78 @@ class TeseCHS(BaseTese):
             freq: dict = {}
             for pk in sorted_keys:
                 if pay_to_fmt.get(pk) == 'ativo':
-                    for c in raw[pk]['chs_por_codigo']:
+                    for c in raw[pk]['chs']:
                         if c != CODIGO_INATIVO:
                             freq[c] = freq.get(c, 0) + 1
             if freq:
                 # Escolhe o código ativo mais frequente como destino do remap
                 codigo_destino = max(freq.items(), key=lambda kv: (kv[1], kv[0]))[0]
                 for pk in sorted_keys:
-                    d = raw[pk]
-                    if CODIGO_INATIVO in d['chs_por_codigo']:
-                        valor_inativo = d['chs_por_codigo'].pop(CODIGO_INATIVO)
-                        d['chs_por_codigo'][codigo_destino] = (
-                            d['chs_por_codigo'].get(codigo_destino, 0.0) + valor_inativo
+                    chs = raw[pk]['chs']
+                    if CODIGO_INATIVO in chs:
+                        src = chs.pop(CODIGO_INATIVO)
+                        dst = chs.setdefault(
+                            codigo_destino, {'normal': 0.0, 'atrasados': [], 'qtd': None}
                         )
-                        if CODIGO_INATIVO in d['chs_qtd_por_codigo']:
-                            qtd_inativo = d['chs_qtd_por_codigo'].pop(CODIGO_INATIVO)
-                            d['chs_qtd_por_codigo'].setdefault(codigo_destino, qtd_inativo)
+                        dst['normal'] += src['normal']
+                        dst['atrasados'].extend(src['atrasados'])
+                        if dst['qtd'] is None:
+                            dst['qtd'] = src['qtd']
 
         # Descobre todos os códigos CHS que apareceram (para colunas F-J)
         codigos_chs_vistos = set()
         for pk in sorted_keys:
-            codigos_chs_vistos.update(raw[pk]['chs_por_codigo'].keys())
+            codigos_chs_vistos.update(raw[pk]['chs'].keys())
 
         codigos_ordenados = self._ordenar_codigos_chs(codigos_chs_vistos)
 
         periodos_out = OrderedDict()
         for pk in sorted_keys:
             d = raw[pk]
+            piso = d['piso']
+            salbase = d['salario_base']
+            chs = d['chs']
+
+            # Soma das CHS principais (normal + atrasados) — base do salário lei500
             chs_principais_soma = sum(
-                v for c, v in d['chs_por_codigo'].items() if c in CHS_PRINCIPAIS
+                b['normal'] + sum(v for _, v in b['atrasados'])
+                for c, b in chs.items() if c in CHS_PRINCIPAIS
             )
 
             # Coluna B — Salário Base
             if vinculo == 'lei500':
-                salario_base = chs_principais_soma
-            elif d['salario_base_verba'] > 0:
-                salario_base = d['salario_base_verba']
+                # Base = soma das CHS principais (que já têm colunas F-J auditáveis)
+                salario_base_normal = chs_principais_soma
+                salario_base_atrasados = []
+            elif salbase['normal'] > 0 or salbase['atrasados']:
+                salario_base_normal = salbase['normal']
+                salario_base_atrasados = list(salbase['atrasados'])
             else:
                 # Aposentado sem 001001 (ex: era Lei 500 e aposentou) — usa CHS
-                salario_base = chs_principais_soma
+                salario_base_normal = chs_principais_soma
+                salario_base_atrasados = []
 
-            jornada_horas = d['piso_qtd']
-            horas_suplementares = sum(d['chs_qtd_por_codigo'].values()) or None
+            # Jornada (col D): qtd do piso normal; se o mês só teve piso atrasado
+            # (piso 100% retroativo), usa a qtd de referência do atrasado.
+            jornada_horas = piso['qtd_normal'] if piso['qtd_normal'] is not None else piso['qtd_atraso']
+            # Horas suplementares (col E): soma das qtd das CHS normais do mês
+            horas_suplementares = sum(b['qtd'] for b in chs.values() if b['qtd']) or None
 
             # Lei 500: horas suplementares = jornada total (o servidor SÓ faz CHS)
             if vinculo == 'lei500' and jornada_horas is not None:
                 horas_suplementares = jornada_horas
 
             periodos_out[pk] = {
-                'salario_base': salario_base,
-                'piso': d['piso_valor'],
+                'salario_base_normal': salario_base_normal,
+                'salario_base_atrasados': salario_base_atrasados,
+                'piso_normal': piso['normal'],
+                'piso_atrasados': list(piso['atrasados']),
                 'jornada_horas': jornada_horas,
                 'horas_suplementares': horas_suplementares,
-                'chs_por_codigo': dict(d['chs_por_codigo']),
+                'chs_por_codigo': {
+                    c: {'normal': b['normal'], 'atrasados': list(b['atrasados'])}
+                    for c, b in chs.items()
+                },
                 'quinquenios': d['quinquenios'],
                 'tem_sexta_parte': d['tem_sexta_parte'],
             }
@@ -233,6 +265,32 @@ class TeseCHS(BaseTese):
             'codigos_chs_colunas': codigos_ordenados,
             'periodos': periodos_out,
         }
+
+    @staticmethod
+    def _add(bucket: dict, nat: str, comp: str, val: float) -> None:
+        """Acumula valor no bucket: normal soma; atrasado (A/R) guarda (comp, val)."""
+        if nat == 'N':
+            bucket['normal'] += val
+        else:
+            bucket['atrasados'].append((comp, val))
+
+    @classmethod
+    def _distribuir_por_pagamento(cls, v, comp: str) -> list:
+        """
+        Retorna [(pay_key, valor), ...].
+
+        Normal: uma parcela no mês de pagamento da competência corrente.
+        Atrasado (A/R): distribui o valor pelos meses do período de referência
+        (periodo_inicio..periodo_fim) e realoca cada parcela ao mês de pagamento
+        do mês a que se refere — mesma lógica de atrasados de BaseTese.
+        """
+        if v.natureza.value == 'N':
+            return [(cls.mes_pagamento(comp), v.valor)]
+        fim = v.periodo_fim or comp
+        inicio = v.periodo_inicio or fim
+        months = cls._months_in_range(inicio, fim)
+        valores = cls._distribute_valor(v.valor, len(months))
+        return [(cls.mes_pagamento(m), val) for m, val in zip(months, valores)]
 
     @staticmethod
     def _ordenar_codigos_chs(codigos: set) -> list:

@@ -16,8 +16,10 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
 
 from src.teses.tese_chs import CHS_LABELS
+from src.teses.base_tese import BaseTese
 
 
 AZUL = "0D1525"
@@ -195,16 +197,27 @@ def _preencher_aba(ws, resultado, codigos_chs, vinculo, aba_ativa: bool, apenas_
         if mes in periodos:
             d = periodos[mes]
 
-            _cell_money(ws, row, 2, d['salario_base'] if d['salario_base'] else None)
-            _cell_money(ws, row, 3, d['piso'] if d['piso'] else None)
+            # B: Salário Base — fórmula auditável se houver atrasados
+            _cell_money_auditavel(
+                ws, row, 2, d['salario_base_normal'], d['salario_base_atrasados']
+            )
+            # C: Piso Salarial Docente — fórmula auditável se houver atrasados
+            _cell_money_auditavel(
+                ws, row, 3, d['piso_normal'], d['piso_atrasados']
+            )
 
             _cell_num(ws, row, 4, d['jornada_horas'])
             _cell_num(ws, row, 5, d['horas_suplementares'])
 
-            # CHS por código (F-J)
+            # CHS por código (F-J) — fórmula auditável se houver atrasados
             for i, codigo in enumerate(codigos_chs):
-                valor = d['chs_por_codigo'].get(codigo)
-                _cell_money(ws, row, 6 + i, valor if valor else None)
+                comp = d['chs_por_codigo'].get(codigo)
+                if comp:
+                    _cell_money_auditavel(
+                        ws, row, 6 + i, comp['normal'], comp['atrasados']
+                    )
+                else:
+                    ws.cell(row=row, column=6 + i).border = thin
 
             # Preenche colunas vazias F-J com só borda
             for j in range(6 + len(codigos_chs), 11):
@@ -266,6 +279,42 @@ def _cell_money(ws, row, col, value):
     cell.font = Font(name=FONT_NAME, size=10)
     cell.border = thin
     cell.alignment = Alignment(horizontal='right', vertical='center')
+    return cell
+
+
+def _cell_money_auditavel(ws, row, col, normal, atrasados):
+    """
+    Emite valor monetário com rastreabilidade de atrasados.
+
+    Sem atrasados: valor normal simples (célula comum).
+    Com atrasados: fórmula =normal+atraso1+... em célula amarela + comentário
+    detalhando o valor normal e cada atraso (por mês de pagamento). Mesma
+    convenção auditável da tese de quinquênios (xlsx_writer).
+    """
+    if not atrasados:
+        return _cell_money(ws, row, col, normal if normal else None)
+
+    parts = []
+    if normal:
+        parts.append(f"{normal:.2f}")
+    for _, val in atrasados:
+        parts.append(f"{val:.2f}")
+    formula = "+".join(parts) if parts else "0"
+
+    cell = ws.cell(row=row, column=col, value=f"={formula}")
+    cell.number_format = MONEY_FMT
+    cell.font = Font(name=FONT_NAME, size=10)
+    cell.border = thin
+    cell.alignment = Alignment(horizontal='right', vertical='center')
+    cell.fill = PatternFill(start_color=AMARELO, end_color=AMARELO, fill_type="solid")
+
+    comment_lines = []
+    if normal:
+        comment_lines.append(f"Normal: R$ {normal:.2f}")
+    for comp_pgto, val in atrasados:
+        pgto = BaseTese.format_comp_display(BaseTese.mes_pagamento(comp_pgto))
+        comment_lines.append(f"Atraso pago em {pgto}: R$ {val:.2f}")
+    cell.comment = Comment("\n".join(comment_lines), "HoleritePRO")
     return cell
 
 
