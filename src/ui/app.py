@@ -148,6 +148,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def _app_version() -> str:
+    """Short SHA do commit em execução — permite conferir o deploy num relance."""
+    root = Path(__file__).resolve().parents[2]
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(root), stderr=subprocess.DEVNULL, timeout=3,
+        ).decode().strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    # Fallback sem depender do binário git (lê .git/HEAD diretamente)
+    try:
+        head = (root / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = head.split(" ", 1)[1].strip()
+            return (root / ".git" / ref).read_text().strip()[:7]
+        return head[:7]
+    except Exception:
+        return "dev"
+
+
 def render_header():
     st.markdown("""
     <div class="main-header">
@@ -155,6 +179,7 @@ def render_header():
         <p>Pinheiro Advocacia — Extração e Cálculo de Teses</p>
     </div>
     """, unsafe_allow_html=True)
+    st.caption(f"versão {_app_version()}")
 
 
 def render_steps(current: int):
