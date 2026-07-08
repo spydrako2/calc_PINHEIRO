@@ -27,3 +27,15 @@ Thumbs.db
 .aios-core/local/
 .claude/settings.local.json
 .aios/install-log.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.coverage
+coverage.xml
+.pytest_cache/
+
+# Project outputs & sensitive data
+output_qa/
+docs/referencias/
