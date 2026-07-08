@@ -12,6 +12,16 @@ from openpyxl.comments import Comment
 from src.teses.base_tese import BaseTese
 
 
+def _months_for_year_in_range(year_str: str, min_per: str, max_per: str) -> list:
+    """Return all YYYY-MM months for year_str that fall within [min_per, max_per]."""
+    y = int(year_str)
+    min_y, min_m = int(min_per[:4]), int(min_per[5:7])
+    max_y, max_m = int(max_per[:4]), int(max_per[5:7])
+    start_m = min_m if y == min_y else 1
+    end_m = max_m if y == max_y else 12
+    return [f"{y:04d}-{m:02d}" for m in range(start_m, end_m + 1)]
+
+
 # Colunas fixas (índices 1-based)
 COL_DATA     = 1
 COL_GRATIF   = 2
@@ -107,9 +117,13 @@ def write_apeoesp_xlsx(resultado: dict, output_path: str) -> str:
 
     # --- Agrupar períodos por ano ---
     periodos = resultado['periodos']
+    all_sorted = sorted(periodos.keys())
     years = defaultdict(list)
-    for per in sorted(periodos.keys()):
+    for per in all_sorted:
         years[per[:4]].append(per)
+
+    min_per = all_sorted[0] if all_sorted else ""
+    max_per = all_sorted[-1] if all_sorted else ""
 
     current_row = HDR + 1
 
@@ -118,14 +132,29 @@ def write_apeoesp_xlsx(resultado: dict, output_path: str) -> str:
     all_13_rows    = []   # linhas de 13° por ano
     all_13f_rows   = []   # linhas de 1/3 férias por ano
 
-    for year, periods_in_year in sorted(years.items()):
+    for year, _periods_in_year in sorted(years.items()):
+        all_months_in_year = _months_for_year_in_range(year, min_per, max_per)
         year_data_start = current_row
         year_total_rows = []
 
-        for per in periods_in_year:
+        for per in all_months_in_year:
             row = current_row
-            d = periodos[per]
             yyyy, mm = per.split('-')
+
+            if per not in periodos:
+                # Mês sem dados: data visível, demais colunas com borda vazia
+                c = ws.cell(row=row, column=COL_DATA, value=f"{mm}/{yyyy}")
+                c.border = thin
+                c.font = norm9
+                c.alignment = Alignment(horizontal='center')
+                for col in range(2, COL_TOTAL + 1):
+                    ws.cell(row=row, column=col).border = thin
+                year_total_rows.append(row)
+                all_total_rows.append(row)
+                current_row += 1
+                continue
+
+            d = periodos[per]
 
             def w(col, val=None, fmt=None, bold=False, fill=None, center=False):
                 c = ws.cell(row=row, column=col, value=val)

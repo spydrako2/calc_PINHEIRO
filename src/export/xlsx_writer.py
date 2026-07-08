@@ -10,6 +10,23 @@ from openpyxl.comments import Comment
 from src.teses.base_tese import BaseTese
 
 
+def _all_months_in_range(sorted_periods: list) -> list:
+    """Return every YYYY-MM month from min to max of sorted_periods, filling gaps."""
+    if not sorted_periods:
+        return []
+    start, end = sorted_periods[0], sorted_periods[-1]
+    months = []
+    y, m = int(start[:4]), int(start[5:7])
+    ey, em = int(end[:4]), int(end[5:7])
+    while (y, m) <= (ey, em):
+        months.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+
+
 def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
     """
     Write tese result to XLSX.
@@ -90,15 +107,24 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
     # --- Data rows ---
     periodos = resultado['periodos']
     sorted_periods = sorted(periodos.keys())
+    all_months = _all_months_in_range(sorted_periods)
     data_start = header_row + 1
+    n_data_cols = 8 if has_sexta else 5
 
-    for i, per in enumerate(sorted_periods):
+    for i, per in enumerate(all_months):
         row = data_start + i
-        data = periodos[per]
         yyyy, mm = per.split('-')
 
-        # A: Competência
+        # A: Competência — always visible
         ws.cell(row=row, column=1, value=f"{mm}/{yyyy}").border = thin
+
+        if per not in periodos:
+            # Month with no data: borders only, cells empty
+            for col in range(2, n_data_cols + 1):
+                ws.cell(row=row, column=col).border = thin
+            continue
+
+        data = periodos[per]
 
         # B: Verba — auditable formula with atrasado breakdown
         normal = data['normal']
@@ -170,7 +196,7 @@ def write_reflexo_xlsx(resultado: dict, output_path: str) -> str:
             cell_h.border = thin
 
     # --- Totals row ---
-    last_data = data_start + len(sorted_periods) - 1
+    last_data = data_start + len(all_months) - 1
     total_row = last_data + 1
 
     ws.cell(row=total_row, column=1, value="TOTAL").font = total_font

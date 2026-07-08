@@ -11,6 +11,23 @@ from openpyxl.comments import Comment
 from src.teses.base_tese import BaseTese
 
 
+def _all_months_in_range(sorted_periods: list) -> list:
+    """Return every YYYY-MM month from min to max of sorted_periods, filling gaps."""
+    if not sorted_periods:
+        return []
+    start, end = sorted_periods[0], sorted_periods[-1]
+    months = []
+    y, m = int(start[:4]), int(start[5:7])
+    ey, em = int(end[:4]), int(end[5:7])
+    while (y, m) <= (ey, em):
+        months.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+
+
 def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
     """
     Gera XLSX no formato de acúmulo IAMSPE.
@@ -89,16 +106,23 @@ def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
 
     # --- Linhas de dados ---
     data_start = HDR + 1
-    sorted_periods = list(periodos.keys())
+    sorted_periods = sorted(periodos.keys())
+    all_months = _all_months_in_range(sorted_periods)
 
-    for i, per in enumerate(sorted_periods):
+    for i, per in enumerate(all_months):
         row = data_start + i
         yyyy, mm = per.split('-')
 
-        # Coluna A: data de pagamento
+        # Coluna A: data de pagamento — sempre visível
         c = ws.cell(row=row, column=1, value=f"{mm}/{yyyy}")
         c.border = thin
         c.alignment = Alignment(horizontal='center')
+
+        if per not in periodos:
+            # Mês sem dados: bordas, células vazias
+            for col in range(2, total_col + 1):
+                ws.cell(row=row, column=col).border = thin
+            continue
 
         # Colunas de rubricas — fórmula se houver atrasados
         for j, code in enumerate(sorted_codes):
@@ -137,7 +161,7 @@ def write_iamspe_xlsx(resultado: dict, output_path: str) -> str:
         c.border = thin
 
     # --- Linha de totais ---
-    last_data = data_start + len(sorted_periods) - 1
+    last_data = data_start + len(all_months) - 1
     total_row = last_data + 1
 
     c = ws.cell(row=total_row, column=1, value="TOTAL")
