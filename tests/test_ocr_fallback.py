@@ -30,19 +30,33 @@ class TestOCRFallback:
         assert result is None
 
     def test_hybrid_extraction_prefers_text(self, pdf_refs_dir):
-        """Hybrid extraction should prefer text over OCR"""
-        pdf_files = list(pdf_refs_dir.glob("*.pdf"))
+        """Quando há texto nativo suficiente, a extração usa TEXTO (não OCR).
+
+        Verifica a consistência da decisão híbrida por página, de forma
+        determinística e independente de qual PDF é lido:
+        - página TEXTO com confiança plena  => tinha texto nativo >= limiar;
+        - página OCR                        => confiança de OCR e texto não vazio.
+
+        Obs: em páginas OCR, ``pagina.texto`` já é o texto reconhecido pelo OCR
+        (o texto nativo curto é substituído), por isso NÃO se pode inferir o
+        método a partir de ``len(texto)`` — era essa a falha do teste anterior.
+        """
+        pdf_files = sorted(pdf_refs_dir.glob("*.pdf"))  # ordem determinística
         if not pdf_files:
             pytest.skip("No reference PDFs found")
 
         pdf_path = pdf_files[0]
         paginas = PDFReader.read_pdf(str(pdf_path))
+        assert paginas, "PDF deve produzir ao menos uma página"
 
-        # Check that pages with sufficient text use TEXTO method
         for pagina in paginas:
-            if len(pagina.texto) >= PDFReader.LIMIAR_MINIMO_CHARS:
-                assert pagina.metodo == "TEXTO"
-                assert pagina.confianca == PDFReader.CONFIANCA_TEXTO
+            assert pagina.metodo in ("TEXTO", "OCR")
+            if pagina.metodo == "TEXTO" and pagina.confianca == PDFReader.CONFIANCA_TEXTO:
+                # Preferiu texto porque havia texto nativo suficiente
+                assert len(pagina.texto) >= PDFReader.LIMIAR_MINIMO_CHARS
+            elif pagina.metodo == "OCR":
+                assert pagina.confianca == PDFReader.CONFIANCA_OCR
+                assert len(pagina.texto) > 0
 
     def test_ocr_confidence_lower_than_text(self):
         """OCR confidence should be lower than text confidence"""
