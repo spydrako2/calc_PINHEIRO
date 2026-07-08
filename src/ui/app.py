@@ -3,6 +3,7 @@ HoleritePRO — Interface Streamlit
 Branding: Pinheiro Advocacia
 """
 
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -457,9 +458,17 @@ def main():
         with open(tmp_xlsx.name, "rb") as f:
             xlsx_bytes = f.read()
 
-        nome_safe = resultado['nome_cliente'].replace(' ', '_')[:30]
-        tese_safe = st.session_state.tese_key
-        filename = f"HoleritePRO_{nome_safe}_{tese_safe}.xlsx"
+        if resultado.get('tese_tipo') == 'chs':
+            # Padrão Pinheiro: "02.PLANILHA DE CÁLCULOS_CHS - {ATIVO|INATIVO} - {NOME}"
+            situacao_nome = {'ativo': 'ATIVO', 'inativo': 'INATIVO'}.get(
+                resultado.get('situacao', 'ativo'), 'ATIVO'
+            )
+            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
+            filename = f"02.PLANILHA DE CÁLCULOS_CHS - {situacao_nome} - {nome}.xlsx"
+        else:
+            nome_safe = resultado['nome_cliente'].replace(' ', '_')[:30]
+            tese_safe = st.session_state.tese_key
+            filename = f"HoleritePRO_{nome_safe}_{tese_safe}.xlsx"
 
         st.download_button(
             label="⬇️ Download XLSX",
