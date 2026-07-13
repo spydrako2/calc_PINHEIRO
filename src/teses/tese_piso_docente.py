@@ -9,5 +9,6 @@ class TesePisoDocente(BaseTese):
         "Reflexo dos adicionais temporais (quinquênios) sobre o Piso Salarial "
         "Docente instituído pelo Decreto 62.500/2017."
     )
+    tese_tipo = "piso"
     verba_codigo = "001035"
-    verba_nome = "PISO SAL.DOCENTE (R$)"
+    verba_nome = "PISO SALARIAL DOCENTE"

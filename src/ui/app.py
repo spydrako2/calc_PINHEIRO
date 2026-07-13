@@ -17,6 +17,7 @@ import streamlit as st
 
 from src.teses import TESES_DISPONIVEIS
 from src.export.xlsx_writer import write_reflexo_xlsx
+from src.export.piso_writer import write_piso_xlsx
 from src.export.iamspe_writer import write_iamspe_xlsx
 from src.export.apeoesp_writer import write_apeoesp_xlsx
 from src.export.chs_writer import write_chs_xlsx
@@ -485,6 +486,23 @@ def main():
                 last = BaseTese.format_comp_display(sorted_p[-1])
                 st.caption(f"Período: {first} a {last}")
 
+            if resultado.get('tese_tipo') == 'piso':
+                sits = set(resultado.get('situacao_por_periodo', {}).values())
+                if sits == {'ativo'}:
+                    situ_txt = "ativo (13º + 1/3 de férias por ano)"
+                elif sits == {'inativo'}:
+                    situ_txt = "inativo (apenas 13º por ano)"
+                else:
+                    situ_txt = "ativo e inativo — cada ano recebe 13º; anos ativos também 1/3 de férias"
+                st.caption(
+                    f"🗓️ Situação: {situ_txt}. O **TOTAL BRUTO** da planilha "
+                    f"inclui os reflexos de 13º e férias, além do valor mensal."
+                )
+                st.caption(
+                    "🔒 Planilha protegida: editáveis apenas as colunas Piso, "
+                    "Qtde Quinquênios e Tem 6ª Parte."
+                )
+
             with st.expander("📋 Preview dos dados", expanded=False):
                 preview_data = []
                 for per in sorted_p:
@@ -503,7 +521,10 @@ def main():
 
             tmp_xlsx = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
             tmp_xlsx.close()
-            write_reflexo_xlsx(resultado, tmp_xlsx.name)
+            if resultado.get('tese_tipo') == 'piso':
+                write_piso_xlsx(resultado, tmp_xlsx.name)
+            else:
+                write_reflexo_xlsx(resultado, tmp_xlsx.name)
 
         # ---- Download (comum para todas as teses) ----
         with open(tmp_xlsx.name, "rb") as f:
@@ -516,6 +537,9 @@ def main():
             )
             nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
             filename = f"02.PLANILHA DE CÁLCULOS_CHS - {situacao_nome} - {nome}.xlsx"
+        elif resultado.get('tese_tipo') == 'piso':
+            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
+            filename = f"02. PLANILHA DE CÁLCULO - QQ PISO_{nome}.xlsx"
         else:
             nome_safe = resultado['nome_cliente'].replace(' ', '_')[:30]
             tese_safe = st.session_state.tese_key

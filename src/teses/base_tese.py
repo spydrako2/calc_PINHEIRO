@@ -60,18 +60,26 @@ class BaseTese(ABC):
         })
         quinq_by_comp = {}
         sexta_parte_comp = None  # first comp where sexta parte was detected
+        # Situação por mês de pagamento: DDPE = ativo, SPPREV = inativo.
+        # O servidor pode ser ativo por boa parte do período e inativo no fim;
+        # o writer usa isto para decidir 13º (sempre) x 1/3 de férias (só ativo).
+        situacao_por_periodo = {}
 
         for p in pages:
             if _ddpe.detect_template(p.texto):
                 ParserClass = DDPEParser
+                situacao = 'ativo'
             elif _spprev.detect_template(p.texto):
                 ParserClass = SpprevAposentadoParser
+                situacao = 'inativo'
             else:
                 continue
 
             comp = self._extract_competencia(p.texto)
             if not comp:
                 continue
+
+            situacao_por_periodo[self.mes_pagamento(comp)] = situacao
 
             # Extract client name from first detected page
             if nome_cliente == "UNKNOWN":
@@ -134,7 +142,10 @@ class BaseTese(ABC):
             d['total'] = d['normal'] + sum(v for _, v in d['atrasados'])
             pct = d['quinquenios'] * 5 / 100
             d['reflexo'] = d['total'] * pct
-            d['reflexo_6p'] = d['reflexo'] / 6 if d['tem_sexta_parte'] else 0.0
+            # 6ª parte segue a planilha modelo Pinheiro: incide sobre a base de
+            # vantagens integrais MAIS a diferença de quinquênios, dividido por 6
+            # (=IF(tem 6ª,(vantagens+diferença quinq)/6,0)).
+            d['reflexo_6p'] = (d['total'] + d['reflexo']) / 6 if d['tem_sexta_parte'] else 0.0
             d['total_devido'] = d['reflexo'] + d['reflexo_6p']
             total_verba += d['total']
             total_reflexo += d['total_devido']
@@ -143,8 +154,10 @@ class BaseTese(ABC):
             'nome_cliente': nome_cliente,
             'tese_nome': self.nome,
             'tese_descricao': self.descricao,
+            'tese_tipo': getattr(self, 'tese_tipo', None),
             'verba_nome': self.verba_nome,
             'periodos': dict(periods),
+            'situacao_por_periodo': situacao_por_periodo,
             'total_verba': total_verba,
             'total_reflexo': total_reflexo,
         }
