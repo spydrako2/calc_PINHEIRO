@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "holeritepro"
-version = "0.1.0"
+version = "1.0.0"
 description = "Automated holerite extraction and calculation for legal proceedings"
 requires-python = ">=3.11"
 

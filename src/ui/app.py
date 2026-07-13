@@ -21,6 +21,7 @@ from src.export.iamspe_writer import write_iamspe_xlsx
 from src.export.apeoesp_writer import write_apeoesp_xlsx
 from src.export.chs_writer import write_chs_xlsx
 from src.teses.base_tese import BaseTese
+from src.version import VERSION, CHANGELOG
 
 
 # --- Page config ---
@@ -148,30 +149,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def _app_version() -> str:
-    """Short SHA do commit em execução — permite conferir o deploy num relance."""
-    root = Path(__file__).resolve().parents[2]
-    try:
-        import subprocess
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(root), stderr=subprocess.DEVNULL, timeout=3,
-        ).decode().strip()
-        if sha:
-            return sha
-    except Exception:
-        pass
-    # Fallback sem depender do binário git (lê .git/HEAD diretamente)
-    try:
-        head = (root / ".git" / "HEAD").read_text().strip()
-        if head.startswith("ref:"):
-            ref = head.split(" ", 1)[1].strip()
-            return (root / ".git" / ref).read_text().strip()[:7]
-        return head[:7]
-    except Exception:
-        return "dev"
-
-
 def render_header():
     st.markdown("""
     <div class="main-header">
@@ -179,7 +156,14 @@ def render_header():
         <p>Pinheiro Advocacia — Extração e Cálculo de Teses</p>
     </div>
     """, unsafe_allow_html=True)
-    st.caption(f"versão {_app_version()}")
+    st.caption(f"versão {VERSION}")
+
+    with st.expander("🆕 Novidades e histórico de atualizações"):
+        for versao, data, mudancas in CHANGELOG:
+            st.markdown(f"**Versão {versao}** · {data}")
+            for m in mudancas:
+                st.markdown(f"- {m}")
+            st.markdown("")
 
 
 def render_steps(current: int):
@@ -235,23 +219,46 @@ def main():
             tmp.close()
             st.session_state.pdf_path = tmp.name
 
-            # Quick extraction of client name
-            nome = BaseTese._extract_nome(
-                _quick_read_first_page(tmp.name)
-            )
-            st.session_state.nome_cliente = nome
+            diag = _diagnosticar_pdf(tmp.name)
 
-            st.markdown(f"""
-            <div class="client-card">
-                <h3>Cliente Identificado</h3>
-                <p>📋 {nome}</p>
-                <p>📄 {uploaded.name}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            if diag['erro_leitura']:
+                st.error(
+                    "❌ **Não consegui abrir este arquivo.** Verifique se é um PDF "
+                    "válido (não protegido por senha) e tente novamente."
+                )
+            elif not diag['reconhecido']:
+                st.error(
+                    "❌ **PDF não reconhecido.** Não encontrei holerites no formato "
+                    "esperado (folha de pagamento do Estado de SP ou da "
+                    "aposentadoria). Confira se enviou o arquivo certo — o mesmo PDF "
+                    "que costuma abrir os demonstrativos mês a mês."
+                )
+            else:
+                nome = diag['nome']
+                st.session_state.nome_cliente = nome
 
-            if st.button("Avançar →", type="primary"):
-                st.session_state.step = 1
-                st.rerun()
+                if not nome or nome == "UNKNOWN":
+                    st.warning(
+                        "⚠️ **Não identifiquei o nome do cliente automaticamente.** "
+                        "O cálculo funciona normalmente; se precisar, ajuste o nome "
+                        "no arquivo Excel gerado no final."
+                    )
+                    nome_display = "(nome não identificado)"
+                else:
+                    nome_display = nome
+
+                st.markdown(f"""
+                <div class="client-card">
+                    <h3>Cliente Identificado</h3>
+                    <p>📋 {nome_display}</p>
+                    <p>📄 {uploaded.name}</p>
+                    <p>🗓️ {diag['n_holerites']} holerites lidos</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if st.button("Avançar →", type="primary"):
+                    st.session_state.step = 1
+                    st.rerun()
 
     # ========== STEP 1: Choose Tese ==========
     elif step == 1:
@@ -287,8 +294,27 @@ def main():
         with col2:
             if st.button("Processar →", type="primary"):
                 with st.spinner("Processando holerites..."):
-                    tese = TESES_DISPONIVEIS[tese_key]()
-                    resultado = tese.processar(st.session_state.pdf_path)
+                    try:
+                        tese = TESES_DISPONIVEIS[tese_key]()
+                        resultado = tese.processar(st.session_state.pdf_path)
+                    except Exception as e:
+                        st.error(
+                            "❌ **Não foi possível concluir o cálculo desta tese.** "
+                            "Tente novamente ou escolha outra tese. Se o erro "
+                            "persistir, encaminhe o PDF para o suporte."
+                        )
+                        with st.expander("Detalhe técnico (para o suporte)"):
+                            st.code(f"{type(e).__name__}: {e}")
+                        st.stop()
+
+                if not _tem_resultado_util(resultado):
+                    st.warning(
+                        "⚠️ **Nenhuma verba desta tese foi encontrada nos "
+                        "holerites.** Verifique se escolheu a tese correta para "
+                        "este cliente — os holerites enviados não contêm as verbas "
+                        "que esta tese calcula."
+                    )
+                else:
                     st.session_state.resultado = resultado
                     st.session_state.tese_key = tese_key
                     st.session_state.step = 2
@@ -516,6 +542,73 @@ def _quick_read_first_page(pdf_path: str) -> str:
     if pages:
         return pages[0].texto
     return ""
+
+
+def _diagnosticar_pdf(pdf_path: str) -> dict:
+    """
+    Valida o PDF antes de prosseguir, para gerar mensagens amigáveis.
+
+    Retorna: {erro_leitura, reconhecido, nome, n_holerites}.
+    - erro_leitura: o arquivo não pôde ser aberto (corrompido, protegido).
+    - reconhecido: há ao menos uma página no formato de holerite conhecido.
+    - nome: nome do cliente extraído (ou "UNKNOWN").
+    - n_holerites: quantas páginas de holerite válido foram encontradas.
+    """
+    from src.core.pdf_reader import PDFReader
+    from src.core.parsers.ddpe_parser import DDPEParser
+    from src.core.parsers.spprev_aposentado_parser import SpprevAposentadoParser
+
+    try:
+        pages = PDFReader.read_pdf(pdf_path)
+    except Exception:
+        return {'erro_leitura': True, 'reconhecido': False,
+                'nome': 'UNKNOWN', 'n_holerites': 0}
+
+    ddpe = DDPEParser()
+    spprev = SpprevAposentadoParser()
+    validas = [
+        p for p in pages
+        if ddpe.detect_template(p.texto) or spprev.detect_template(p.texto)
+    ]
+
+    nome = "UNKNOWN"
+    for p in validas:
+        nome = BaseTese._extract_nome(p.texto)
+        if nome and nome != "UNKNOWN":
+            break
+
+    return {
+        'erro_leitura': False,
+        'reconhecido': len(validas) > 0,
+        'nome': nome,
+        'n_holerites': len(validas),
+    }
+
+
+def _tem_resultado_util(resultado: dict) -> bool:
+    """
+    True se o cálculo encontrou verbas da tese. Usado para avisar quando a
+    tese escolhida não bate com o conteúdo dos holerites.
+    """
+    if not resultado:
+        return False
+    periodos = resultado.get('periodos') or {}
+    if not periodos:
+        # IAMSPE usa 'rubricas' em vez de valores nos períodos
+        if resultado.get('tese_tipo') == 'iamspe':
+            return bool(resultado.get('rubricas'))
+        return False
+
+    tipo = resultado.get('tese_tipo')
+    if tipo == 'iamspe':
+        return bool(resultado.get('rubricas'))
+    if tipo == 'apeoesp':
+        return (resultado.get('total_geral') or 0) > 0
+    if tipo == 'chs':
+        # Há período com alguma CHS efetivamente lida
+        return any(d.get('chs_por_codigo') for d in periodos.values())
+    # Teses de reflexo simples
+    return (resultado.get('total_verba') or 0) > 0
 
 
 if __name__ == "__main__":
