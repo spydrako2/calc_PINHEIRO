@@ -30,11 +30,18 @@ from src.core.parsers.spprev_aposentado_parser import SpprevAposentadoParser
 from src.teses.base_tese import BaseTese
 
 
-CHS_PRINCIPAIS = {"002044", "002045", "002051", "002004"}
+CHS_PRINCIPAIS = {"002044", "002045", "002046", "002051", "002004"}
 CHS_OUTRAS = {"002062"}
 CHS_TODOS = CHS_PRINCIPAIS | CHS_OUTRAS
 
 CODIGO_INATIVO = "002004"
+
+# 02.046 = CHS de Coord./Vice Diretor. É carga REAL própria (não é resumo dos
+# demais): o servidor pode acumular 5-8 série (044), ensino médio (045) e a
+# carga de vice/coord (046) no mesmo mês. Validação: a soma das horas de todas
+# as CHS fecha com a "qtde" do piso do magistério (jornada). Ex.: EDER faz
+# 50h(044)+50h(045)+100h(046)=200h = jornada; JAQUELINE só tem 046.
+CODIGO_VICE_DIRETOR = "002046"
 
 CODIGO_PISO = "001035"
 CODIGOS_SALARIO_BASE = {"001001", "001002"}
@@ -44,6 +51,7 @@ CODIGO_SEXTA_CHS = "010003"
 CHS_LABELS = {
     "002044": "CHS Fundamental\n(cód. 02.044)",
     "002045": "CHS Ensino Médio\n(cód. 02.045)",
+    "002046": "CHS Coord./Vice Diretor\n(cód. 02.046)",
     "002051": "CHS Genérica\n(cód. 02.051)",
     "002062": "Aulas Reposição\n(cód. 02.062)",
     "002004": "CHS Inativo\n(cód. 02.004)",

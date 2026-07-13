@@ -96,11 +96,61 @@ class TestTeseCHSEndToEnd:
         )
         assert n_atrasados == 13
 
+    def test_captura_chs_vice_diretor(self, eder_resultado):
+        # Regressão: a CHS de Coord./Vice Diretor (02.046) precisa ser puxada.
+        # EDER faz 50h(044)+50h(045)+100h(046). Antes o 046 era descartado e as
+        # horas suplementares ficavam em 100 (metade), subcontando a diferença.
+        assert "002046" in eder_resultado['codigos_chs_colunas']
+        # Validação de negócio: soma das horas de CHS = jornada (qtde do piso).
+        meses_ok = [
+            d for d in eder_resultado['periodos'].values()
+            if d['jornada_horas'] and d['horas_suplementares']
+            and abs(d['horas_suplementares'] - d['jornada_horas']) < 0.01
+        ]
+        assert len(meses_ok) >= 20
+
     def test_soma_diferencas_bate_valor_esperado(self, eder_resultado):
-        # Valor validado manualmente; com os atrasados de piso incluídos.
-        assert _soma_diferencas_chs(eder_resultado) == pytest.approx(7083.52, abs=1.0)
+        # Valor com a CHS de vice diretor (02.046) incluída: horas suplementares
+        # = 200 (não 100). O valor anterior (7083.52) contava só metade das horas.
+        assert _soma_diferencas_chs(eder_resultado) == pytest.approx(14167.04, abs=1.0)
 
     def test_gera_xlsx_sem_erro(self, eder_resultado, tmp_path):
         out = tmp_path / "eder_chs.xlsx"
         write_chs_xlsx(eder_resultado, str(out))
+        assert out.exists() and out.stat().st_size > 0
+
+
+JAQUELINE_PDF = Path(
+    "docs/referencias/CHS/06. HOLERITES 02-2021 A 06-2026 - "
+    "JAQUELINE ADRIANE CORREA SOUZA (12565647-03).pdf"
+)
+
+
+class TestTeseCHSViceDiretorSozinho:
+    """Jaqueline (Lei 500) atua como vice-diretora com CHS 02.046 sozinha —
+    sem 044/045 na maioria dos meses. Regressão do bug em que o cálculo zerava
+    porque a única carga (046) era descartada."""
+
+    @pytest.fixture(scope="class")
+    def jaque(self):
+        if not JAQUELINE_PDF.exists():
+            pytest.skip("PDF de referência da JAQUELINE não encontrado")
+        return TeseCHS().processar(str(JAQUELINE_PDF))
+
+    def test_vice_diretor_vira_coluna(self, jaque):
+        assert "002046" in jaque['codigos_chs_colunas']
+
+    def test_salario_base_nao_zera_com_046(self, jaque):
+        # Lei 500: salário base = soma das CHS principais. Sem o 046, os meses de
+        # atuação como vice ficavam com base 0 (cálculo zerado).
+        meses_com_046 = [
+            d for d in jaque['periodos'].values()
+            if '002046' in d['chs_por_codigo'] and d['jornada_horas']
+        ]
+        assert meses_com_046, "esperava meses com CHS 02.046 e jornada"
+        assert all(d['salario_base_normal'] > 0 for d in meses_com_046)
+
+    def test_gera_xlsx_sem_erro(self, jaque, tmp_path):
+        out = tmp_path / "jaque_chs.xlsx"
+        write_chs_xlsx(jaque, str(out))
         assert out.exists() and out.stat().st_size > 0
