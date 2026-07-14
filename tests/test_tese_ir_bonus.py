@@ -24,6 +24,7 @@ from src.export.ir_bonus_writer import write_ir_bonus_xlsx
 REF = Path("docs/referencias/IR BONUS")
 PDF_ADILSON = REF / "06. HOLERITES SUPLEMENTAR 07-2021 A 04-2026 - ADILSON PEREIRA.pdf"
 PDF_KEILLA = REF / "06. HOLERITES SUPLEMENTAR 12-2021 A 04-2026 - KEILLA MARÇAL PEREIRA.pdf"
+PDF_KARIM = REF / "06. HOLERITES SUPLEMENTAR 07-2021 A 04-2026 - KARIM ANDRADE CARDOZO DE MACEDO (11289090-01).pdf"
 
 
 class TestTabelasIRPF:
@@ -64,54 +65,64 @@ class TestClassificacao:
 
 
 class TestCalculoParcela:
-    def test_dejec_isencao_recupera_todo_ir(self):
-        p = {"inicio": date(2024, 11, 1), "fim": date(2024, 11, 30),
-             "pagamento": date(2025, 1, 8), "bonus": 282.88,
-             "dependentes": 0, "ir_pago": 39.84}
-        assert TeseIRBonus.diferenca_parcela(p, "DEJEC") == pytest.approx(39.84, abs=0.01)
-
     def test_meses_periodo(self):
         assert TeseIRBonus.meses_periodo(date(2023, 3, 1), date(2023, 12, 31)) == 10
         assert TeseIRBonus.meses_periodo(date(2021, 1, 1), date(2021, 1, 31)) == 1
 
+    def test_rra_parcela_isenta(self):
+        p = {"inicio": date(2020, 3, 1), "fim": date(2020, 4, 30),
+             "pagamento": date(2021, 7, 27), "bonus": 450.0,
+             "dependentes": 0, "ir_pago": 118.62}
+        # base 225/mês → isento → recupera todo o IR pago
+        assert TeseIRBonus.diferenca_rra(p) == pytest.approx(118.62, abs=0.01)
+
 
 @pytest.mark.skipif(not PDF_ADILSON.exists(), reason="PDF de referência ausente")
 class TestExtracaoReal:
-    def test_adilson_br_policial(self):
+    def test_adilson_br_no_bloco_rra(self):
         r = TeseIRBonus().processar(str(PDF_ADILSON))
         assert r["nome_cliente"] == "ADILSON PEREIRA"
-        assert set(r["parcelas_por_tipo"].keys()) == {"BR"}
-        assert len(r["parcelas_por_tipo"]["BR"]) == 28
-        # todas as parcelas de 2 meses → base baixa → recupera todo o IR
+        assert len(r["rra"]) == 28          # só BR, no bloco RRA
+        assert r["isencao"] == {}           # sem FUNDEB/DEJEC
         assert r["total_recuperar"] == pytest.approx(8993.31, abs=0.01)
 
-    def test_keilla_fundeb_e_br_docente(self):
-        r = TeseIRBonus().processar(str(PDF_KEILLA))
-        tipos = r["parcelas_por_tipo"]
-        assert "FUNDEB" in tipos and "BR" in tipos
-        # FUNDEB: todas pagas ≤ 2022 (filtro não remove nenhuma aqui)
-        for p in tipos["FUNDEB"]:
-            assert p["pagamento"].year <= 2022
-        assert r["total_recuperar"] == pytest.approx(5967.29, abs=0.01)
+    def test_karim_extrai_dependentes(self):
+        # KARIM tem "IMPOSTO DE RENDA NA FONTE 002 DEPTE" → 2 dependentes.
+        # Parcelas com IR retido (ir_pago > 0) devem trazer os 2 dependentes;
+        # páginas sem linha de IR ficam com 0 (nada a recuperar ali).
+        r = TeseIRBonus().processar(str(PDF_KARIM))
+        assert r["rra"], "esperado parcelas BR"
+        com_ir = [p for p in r["rra"] if p["ir_pago"] > 0]
+        assert com_ir and all(p["dependentes"] == 2 for p in com_ir)
 
-    def test_ir_rateado_entre_parcelas_do_holerite(self):
-        # holerite com múltiplas parcelas: soma do IR rateado == IR do holerite
-        r = TeseIRBonus().processar(str(PDF_ADILSON))
-        # não há como somar por holerite aqui sem reprocessar; garante que o IR
-        # pago total das parcelas é positivo e coerente
-        total_ir = sum(p["ir_pago"] for p in r["parcelas_por_tipo"]["BR"])
-        assert total_ir > 0
+    def test_keilla_fundeb_vai_para_isencao(self):
+        r = TeseIRBonus().processar(str(PDF_KEILLA))
+        # BR no bloco RRA; FUNDEB no bloco de isenção (restituição integral)
+        assert len(r["rra"]) == 2
+        assert "FUNDEB" in r["isencao"]
+        for p in r["isencao"]["FUNDEB"]:
+            assert p["pagamento"].year <= 2022     # filtro FUNDEB ≤ 2022
+        # isenção FUNDEB = soma integral do IR pago
+        fundeb_total = sum(p["ir_pago"] for p in r["isencao"]["FUNDEB"])
+        assert fundeb_total == pytest.approx(4282.20, abs=0.01)
+        assert r["total_recuperar"] == pytest.approx(7355.70, abs=0.01)
+
+    def test_multi_pdf_nao_duplica(self):
+        # mesmo PDF duas vezes → dedup evita contar em dobro
+        r1 = TeseIRBonus().processar(str(PDF_ADILSON))
+        r2 = TeseIRBonus().processar([str(PDF_ADILSON), str(PDF_ADILSON)])
+        assert len(r2["rra"]) == len(r1["rra"])
+        assert r2["total_recuperar"] == pytest.approx(r1["total_recuperar"], abs=0.01)
 
 
 @pytest.mark.skipif(not PDF_KEILLA.exists(), reason="PDF de referência ausente")
 class TestWriterFormulas:
-    def test_xlsx_reproduz_formulas_do_modelo(self, tmp_path):
+    def test_xlsx_dois_blocos_e_dados(self, tmp_path):
         r = TeseIRBonus().processar(str(PDF_KEILLA))
         out = tmp_path / "keilla.xlsx"
         write_ir_bonus_xlsx(r, str(out))
         wb = openpyxl.load_workbook(out)
-        assert "Dados" in wb.sheetnames
-        assert any(s.startswith("Cálculo - ") for s in wb.sheetnames)
+        assert wb.sheetnames == ["Cálculo", "Dados"]
 
         # aba Dados tem a dedução por dependente em K3 e a tabela M2:R21
         dados = wb["Dados"]
@@ -119,16 +130,18 @@ class TestWriterFormulas:
         assert dados["M2"].value == "Ano_2015"
         assert dados["M21"].value == "Ano_2025"
 
-        # linha de dados usa fórmula RRA (coluna N) e input de bônus (coluna F)
-        ws = wb[[s for s in wb.sheetnames if s.startswith("Cálculo")][0]]
-        assert str(ws["N4"].value).startswith("=") or ws["N4"].value == 0
-        assert isinstance(ws["F4"].value, (int, float))
+        # a aba Cálculo tem os dois blocos e o VALOR DA CAUSA
+        ws = wb["Cálculo"]
+        textos = [ws.cell(row=r_, column=1).value for r_ in range(1, ws.max_row + 1)]
+        textos = [t for t in textos if isinstance(t, str)]
+        assert any("BONIFICAÇÃO POR RESULTADOS (RRA)" in t for t in textos)
+        assert any("ISENÇÃO" in t for t in textos)
+        assert any("VALOR DA CAUSA" in t for t in textos)
 
     def test_simulacao_formula_excel_bate_com_python(self):
         # Reproduz o INDEX/SUMPRODUCT do Excel em Python e compara com o cálculo.
         r = TeseIRBonus().processar(str(PDF_KEILLA))
-        total_sim = 0.0
-        for tipo, parcelas in r["parcelas_por_tipo"].items():
-            for p in parcelas:
-                total_sim += TeseIRBonus.diferenca_parcela(p, tipo)
+        total_sim = sum(TeseIRBonus.diferenca_rra(p) for p in r["rra"])
+        for parcelas in r["isencao"].values():
+            total_sim += sum(p["ir_pago"] for p in parcelas)   # isenção = IR integral
         assert total_sim == pytest.approx(r["total_recuperar"], abs=0.01)

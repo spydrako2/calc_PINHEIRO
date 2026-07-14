@@ -212,17 +212,26 @@ def main():
         uploaded = st.file_uploader(
             "Arraste ou clique para selecionar",
             type=["pdf"],
-            help="Aceita PDFs do Demonstrativo de Pagamento (DDPE) do Estado de SP",
+            accept_multiple_files=True,
+            help=(
+                "Aceita um ou mais PDFs do Demonstrativo de Pagamento (DDPE). "
+                "Para a tese de IR sobre Bônus, envie o holerite normal E o "
+                "suplementar juntos — os dois entram na mesma planilha."
+            ),
         )
 
         if uploaded:
-            # Save to temp file
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-            tmp.write(uploaded.read())
-            tmp.close()
-            st.session_state.pdf_path = tmp.name
+            # Save all uploaded files to temp; pdf_path = primeiro (compat/diagnóstico)
+            paths = []
+            for uf in uploaded:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                tmp.write(uf.read())
+                tmp.close()
+                paths.append(tmp.name)
+            st.session_state.pdf_paths = paths
+            st.session_state.pdf_path = paths[0]
 
-            diag = _diagnosticar_pdf(tmp.name)
+            diag = _diagnosticar_pdf(paths[0])
 
             if diag['erro_leitura']:
                 st.error(
@@ -250,12 +259,13 @@ def main():
                 else:
                     nome_display = nome
 
+                arquivos = ", ".join(uf.name for uf in uploaded)
                 st.markdown(f"""
                 <div class="client-card">
                     <h3>Cliente Identificado</h3>
                     <p>📋 {nome_display}</p>
-                    <p>📄 {uploaded.name}</p>
-                    <p>🗓️ {diag['n_holerites']} holerites lidos</p>
+                    <p>📄 {len(uploaded)} arquivo(s): {arquivos}</p>
+                    <p>🗓️ {diag['n_holerites']} holerites lidos (1º arquivo)</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -299,7 +309,13 @@ def main():
                 with st.spinner("Processando holerites..."):
                     try:
                         tese = TESES_DISPONIVEIS[tese_key]()
-                        resultado = tese.processar(st.session_state.pdf_path)
+                        # IR Bônus junta todos os PDFs (normal + suplementar);
+                        # as demais teses usam o primeiro arquivo.
+                        if tese_key == 'ir_bonus':
+                            entrada = st.session_state.get('pdf_paths', [st.session_state.pdf_path])
+                        else:
+                            entrada = st.session_state.pdf_path
+                        resultado = tese.processar(entrada)
                     except Exception as e:
                         st.error(
                             "❌ **Não foi possível concluir o cálculo desta tese.** "
@@ -339,55 +355,72 @@ def main():
         sorted_p = sorted(periodos.keys())
         n_meses = len(sorted_p)
 
-        # ---- IR sobre Bônus (RRA): parcelas por tipo, cálculo por fórmula ----
+        # ---- IR sobre Bônus: bloco RRA (BR) + bloco(s) de isenção (FUNDEB/DEJEC) ----
         if resultado.get('tese_tipo') == 'ir_bonus':
-            parcelas_por_tipo = resultado.get('parcelas_por_tipo', {})
+            parcelas_rra = resultado.get('rra', [])
+            isencao = resultado.get('isencao', {})
             total_recuperar = resultado.get('total_recuperar', 0.0)
-            n_parcelas = sum(len(ps) for ps in parcelas_por_tipo.values())
-            tipo_nomes = {
-                'BR': 'Bonificação por Resultados',
-                'FUNDEB': 'Abono FUNDEB',
-                'DEJEC': 'DEJEC (isenção)',
-            }
+            n_parcelas = len(parcelas_rra) + sum(len(ps) for ps in isencao.values())
+            isencao_nomes = {'FUNDEB': 'Abono FUNDEB', 'DEJEC': 'DEJEC'}
 
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Parcelas de Bônus", n_parcelas)
             with col2:
-                st.metric("Tipos Encontrados", len(parcelas_por_tipo))
+                st.metric("Bloco RRA (BR)", len(parcelas_rra))
             with col3:
                 st.metric("Total a Recuperar", f"R$ {total_recuperar:,.2f}")
 
-            if not parcelas_por_tipo:
+            if n_parcelas == 0:
                 st.warning(
                     "Nenhuma parcela de bônus (Bonificação por Resultados, Abono "
-                    "FUNDEB ou DEJEC) foi encontrada nos holerites. Verifique se o "
-                    "PDF é o holerite **suplementar** com os pagamentos retroativos."
+                    "FUNDEB ou DEJEC) foi encontrada. Verifique se enviou o holerite "
+                    "**suplementar** com os pagamentos retroativos."
                 )
             else:
                 st.caption(
-                    "Cada aba da planilha traz um tipo de bônus, com as fórmulas do "
-                    "cálculo RRA e a aba **Dados** (tabelas IRPF). O nº de dependentes "
-                    "vem em branco (0) — ajuste na coluna H se houver dependentes."
+                    "A planilha traz a **Bonificação por Resultados** no cálculo RRA "
+                    "(imposto diluído nos meses) e o **Abono FUNDEB / DEJEC** como "
+                    "isenção (restituição integral), no mesmo modelo do escritório. "
+                    "O nº de dependentes é lido do holerite (ajustável na coluna H)."
                 )
 
-            for tipo, parcelas in parcelas_por_tipo.items():
-                subtotal = sum(TeseIRBonus.diferenca_parcela(p, tipo) for p in parcelas)
+            if parcelas_rra:
+                subtotal = sum(TeseIRBonus.diferenca_rra(p) for p in parcelas_rra)
                 with st.expander(
-                    f"📋 {tipo_nomes.get(tipo, tipo)} — {len(parcelas)} parcelas "
-                    f"(R$ {subtotal:,.2f})",
-                    expanded=False,
+                    f"📋 Bonificação por Resultados (RRA) — {len(parcelas_rra)} "
+                    f"parcelas (R$ {subtotal:,.2f})",
+                    expanded=True,
                 ):
                     preview = []
-                    for p in parcelas:
+                    for p in parcelas_rra:
                         meses = TeseIRBonus.meses_periodo(p['inicio'], p['fim'])
                         preview.append({
                             "Referência": f"{p['inicio'].strftime('%m/%Y')}–{p['fim'].strftime('%m/%Y')}",
                             "Meses": meses,
                             "Pagamento": p['pagamento'].strftime('%d/%m/%Y') if p['pagamento'] else "-",
                             "Bônus": f"R$ {p['bonus']:,.2f}",
+                            "Dep.": p['dependentes'],
                             "IR Pago": f"R$ {p['ir_pago']:,.2f}",
-                            "A Recuperar": f"R$ {TeseIRBonus.diferenca_parcela(p, tipo):,.2f}",
+                            "A Recuperar": f"R$ {TeseIRBonus.diferenca_rra(p):,.2f}",
+                        })
+                    st.dataframe(preview, use_container_width=True, hide_index=True)
+
+            for tipo, parcelas in isencao.items():
+                subtotal = sum(p['ir_pago'] for p in parcelas)
+                with st.expander(
+                    f"📋 {isencao_nomes.get(tipo, tipo)} — isenção, "
+                    f"{len(parcelas)} parcelas (R$ {subtotal:,.2f} — restituição total)",
+                    expanded=True,
+                ):
+                    preview = []
+                    for p in parcelas:
+                        preview.append({
+                            "Referência": f"{p['inicio'].strftime('%m/%Y')}–{p['fim'].strftime('%m/%Y')}",
+                            "Pagamento": p['pagamento'].strftime('%d/%m/%Y') if p['pagamento'] else "-",
+                            "Valor Pago": f"R$ {p['bonus']:,.2f}",
+                            "IR Pago": f"R$ {p['ir_pago']:,.2f}",
+                            "A Recuperar": f"R$ {p['ir_pago']:,.2f}",
                         })
                     st.dataframe(preview, use_container_width=True, hide_index=True)
 

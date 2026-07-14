@@ -43,11 +43,14 @@ CHANGELOG = [
         "1.1",
         "Julho/2026",
         [
-            "Nova tese: IR sobre Bônus (RRA). Recupera o Imposto de Renda retido "
-            "a maior sobre bônus pagos acumuladamente — Bonificação por "
-            "Resultados, Abono FUNDEB e DEJEC.",
-            "A planilha traz o cálculo pronto por fórmulas (regime RRA) e a aba "
-            "de tabelas do IRPF, no mesmo modelo usado pelo escritório.",
+            "Nova tese: IR sobre Bônus. A Bonificação por Resultados é recuperada "
+            "pela regra RRA (imposto diluído nos meses), e o Abono FUNDEB e a "
+            "DEJEC entram como isenção — com restituição integral do imposto.",
+            "A planilha segue o modelo do escritório: cálculo da RRA em cima e a "
+            "tabela de isenção logo abaixo, com as fórmulas e as tabelas do IRPF.",
+            "O nº de dependentes é lido automaticamente do holerite.",
+            "Dá para enviar vários PDFs de uma vez (holerite normal + suplementar) "
+            "e tudo cai na mesma planilha.",
         ],
     ),
     (
