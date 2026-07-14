@@ -101,7 +101,8 @@ def ir_devido_rra(bonus: float, n_meses: int, ano: str, dependentes: int = 0) ->
         }
     base_bruta = bonus / n_meses
     deducao_dep = dependentes * DEDUCAO_POR_DEPENDENTE
-    base_calculo = base_bruta - deducao_dep
+    # A dedução por dependente não pode tornar a base negativa (piso em 0).
+    base_calculo = max(0.0, base_bruta - deducao_dep)
     f = faixa_para_base(base_calculo, ano)
     ir_devido = max(0.0, (base_calculo * f.aliquota - f.parcela_deduzir) * n_meses)
     return {

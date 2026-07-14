@@ -19,10 +19,12 @@ AZUL = "0D1525"
 DOURADO = "B38642"
 CINZA = "F2F2F2"
 AMARELO = "FFF2CC"
+AZUL_CLARO = "EAF1FB"   # células de fórmula (não editar)
 BRANCO = "FFFFFF"
 
 FONT_NAME = "Lato"
-MONEY_FMT = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * "-"??_-;_-@_-'
+# Zero é exibido como "R$ 0,00" (e não como traço), para não parecer célula vazia.
+MONEY_FMT = '_-"R$"\\ * #,##0.00_-;\\-"R$"\\ * #,##0.00_-;_-"R$"\\ * #,##0.00_-;_-@_-'
 PCT_FMT = "0.0%"
 DATE_FMT = "dd/mm/yyyy"
 
@@ -113,7 +115,6 @@ def _bloco_rra(ws, row, parcelas):
     _cabecalho(ws, row, HDR_RRA)
     row += 1
 
-    cinza = PatternFill(start_color=CINZA, end_color=CINZA, fill_type="solid")
     amarelo = PatternFill(start_color=AMARELO, end_color=AMARELO, fill_type="solid")
     inicio = row
     for p in parcelas:
@@ -126,10 +127,10 @@ def _bloco_rra(ws, row, parcelas):
         _formula(ws, row, 7, f'=IF(OR(F{row}="",C{row}="",C{row}=0),"",F{row}/C{row})')
         _num(ws, row, 8, p.get("dependentes", 0))
         _formula(ws, row, 9, f'=IF(OR(H{row}="",H{row}=0),0,H{row}*Dados!$K$3)')
-        _formula(ws, row, 10, f'=IF(G{row}="","",G{row}-I{row})')
+        _formula(ws, row, 10, f'=IF(G{row}="","",MAX(0,G{row}-I{row}))')
         _formula(ws, row, 11, _lookup(row, "P"), fmt="General")
-        _formula(ws, row, 12, _lookup(row, "Q"), fmt=PCT_FMT, fill=cinza)
-        _formula(ws, row, 13, _lookup(row, "R"), fill=cinza)
+        _formula(ws, row, 12, _lookup(row, "Q"), fmt=PCT_FMT)
+        _formula(ws, row, 13, _lookup(row, "R"))
         _formula(ws, row, 14, f'=IF(OR(J{row}="",L{row}="",L{row}=0,C{row}=""),0,MAX(0,(J{row}*L{row}-M{row})*C{row}))')
         _money(ws, row, 15, p["ir_pago"])
         _formula(ws, row, 16, f'=IF(OR(O{row}="",N{row}=""),"",O{row}-N{row})', fill=amarelo, bold=True)
@@ -250,11 +251,13 @@ def _num(ws, row, col, value):
 
 
 def _num_money_zero(ws, row, col):
+    # IR devido = 0 fixo (verba isenta) — tratado como fórmula/sistema (azul claro).
     cell = ws.cell(row=row, column=col, value=0)
     cell.number_format = MONEY_FMT
     cell.font = Font(name=FONT_NAME, size=10)
     cell.alignment = Alignment(horizontal="right", vertical="center")
     cell.border = thin
+    cell.fill = PatternFill(start_color=AZUL_CLARO, end_color=AZUL_CLARO, fill_type="solid")
     return cell
 
 
@@ -264,8 +267,8 @@ def _formula(ws, row, col, formula, fmt=MONEY_FMT, fill=None, bold=False, center
     cell.font = Font(name=FONT_NAME, size=10, bold=bold)
     cell.border = thin
     cell.alignment = Alignment(horizontal="center" if center else "right", vertical="center")
-    if fill:
-        cell.fill = fill
+    # Fórmula → azul claro por padrão (sinaliza "não editar"); resultado usa amarelo.
+    cell.fill = fill or PatternFill(start_color=AZUL_CLARO, end_color=AZUL_CLARO, fill_type="solid")
     return cell
 
 

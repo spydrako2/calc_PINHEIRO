@@ -54,6 +54,13 @@ class TestTabelasIRPF:
         assert calc["deducao_dep"] == pytest.approx(2 * DEDUCAO_POR_DEPENDENTE, abs=0.01)
         assert calc["base_calculo"] == pytest.approx(6000.0 - 2 * DEDUCAO_POR_DEPENDENTE, abs=0.01)
 
+    def test_base_nao_fica_negativa(self):
+        # bônus baixo (225 em 2 meses = 112,50/mês) com 2 dependentes:
+        # dedução 379,18 > base bruta → base de cálculo piso em 0 (não negativa).
+        calc = ir_devido_rra(225.0, 2, "Ano_2015", dependentes=2)
+        assert calc["base_calculo"] == 0.0
+        assert calc["ir_devido"] == 0.0
+
 
 class TestClassificacao:
     def test_classifica_tipos(self):
