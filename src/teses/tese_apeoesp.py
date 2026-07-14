@@ -22,9 +22,11 @@ from src.core.parsers.ddpe_parser import DDPEParser
 from src.teses.base_tese import BaseTese
 
 
-# Verbas que compõem cada coluna
-VERBAS_GRATIF_GERAL = {"004118", "004119"}
-VERBAS_GTE          = {"004107", "004109"}
+# Verbas que compõem cada coluna.
+# Cada gratificação tem o código base, a variante SDOC/REP/RECUP e a variante
+# de SUBSTITUIÇÃO (aulas em substituição) — todas entram na mesma coluna.
+VERBAS_GRATIF_GERAL = {"004118", "004119", "004144"}  # 004144 = GRAT.GERAL-SUBSTITUIÇÃO
+VERBAS_GTE          = {"004107", "004109", "004143"}  # 004143 = GTE-SUBSTITUIÇÃO
 VERBAS_GAM          = {"004130", "004131"}
 VERBAS_SEXTA_PARTE  = {"010001", "010002", "010003", "010010", "010021"}
 
