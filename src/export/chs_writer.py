@@ -17,6 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.comments import Comment
+from openpyxl.worksheet.properties import PageSetupProperties
 
 from src.teses.tese_chs import CHS_LABELS
 from src.teses.base_tese import BaseTese
@@ -26,6 +27,7 @@ AZUL = "0D1525"
 DOURADO = "B38642"
 CINZA = "F2F2F2"
 AMARELO = "FFF2CC"
+LARANJA = "FCE4D6"
 BRANCO = "FFFFFF"
 
 FONT_NAME = "Lato"
@@ -59,8 +61,22 @@ def write_chs_xlsx(resultado: dict, output_path: str) -> str:
         _preencher_aba(ws_inativo, resultado, codigos_chs, vinculo, aba_ativa=False)
         _preencher_aba(ws_ativo, resultado, codigos_chs, vinculo, aba_ativa=True, apenas_estrutura=True)
 
+    _layout_impressao(ws_ativo)
+    _layout_impressao(ws_inativo)
+
     wb.save(output_path)
     return output_path
+
+
+def _layout_impressao(ws):
+    """Configura 'salvar como PDF' / impressão: paisagem, todas as colunas em
+    uma página (largura), altura livre em várias páginas."""
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
 
 
 def _all_months(sorted_periods: list) -> list:
@@ -211,7 +227,10 @@ def _preencher_aba(ws, resultado, codigos_chs, vinculo, aba_ativa: bool, apenas_
                 ws, row, 3, d['piso_normal'], d['piso_atrasados']
             )
 
-            _cell_num(ws, row, 4, d['jornada_horas'])
+            _cell_num(
+                ws, row, 4, d['jornada_horas'],
+                alerta_vazio="Jornada não localizada no holerite. Preencher manualmente antes de conferir a Diferença Mensal (colunas K-S ficam zeradas até então).",
+            )
             _cell_num(ws, row, 5, d['horas_suplementares'])
 
             # CHS por código (F-J) — fórmula auditável se houver atrasados
@@ -323,12 +342,15 @@ def _cell_money_auditavel(ws, row, col, normal, atrasados):
     return cell
 
 
-def _cell_num(ws, row, col, value):
+def _cell_num(ws, row, col, value, alerta_vazio=None):
     cell = ws.cell(row=row, column=col, value=value)
     cell.number_format = '0'
     cell.font = Font(name=FONT_NAME, size=10)
     cell.border = thin
     cell.alignment = Alignment(horizontal='center', vertical='center')
+    if value is None and alerta_vazio:
+        cell.fill = PatternFill(start_color=LARANJA, end_color=LARANJA, fill_type="solid")
+        cell.comment = Comment(alerta_vazio, "HoleritePRO")
     return cell
 
 
