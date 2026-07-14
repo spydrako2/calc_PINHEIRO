@@ -16,7 +16,7 @@ CHANGELOG (a interface mostra só as mais recentes).
 import subprocess
 from pathlib import Path
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 def _build_number() -> str:
@@ -39,6 +39,17 @@ BUILD = _build_number()
 # Histórico em linguagem do usuário — mais recente primeiro.
 # Cada entrada: (versão, data_amigavel, [lista de mudanças]).
 CHANGELOG = [
+    (
+        "1.1",
+        "Julho/2026",
+        [
+            "Nova tese: IR sobre Bônus (RRA). Recupera o Imposto de Renda retido "
+            "a maior sobre bônus pagos acumuladamente — Bonificação por "
+            "Resultados, Abono FUNDEB e DEJEC.",
+            "A planilha traz o cálculo pronto por fórmulas (regime RRA) e a aba "
+            "de tabelas do IRPF, no mesmo modelo usado pelo escritório.",
+        ],
+    ),
     (
         "1.0",
         "Julho/2026",

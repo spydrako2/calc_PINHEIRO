@@ -16,11 +16,13 @@ if _project_root not in sys.path:
 import streamlit as st
 
 from src.teses import TESES_DISPONIVEIS
+from src.teses.tese_ir_bonus import TeseIRBonus
 from src.export.xlsx_writer import write_reflexo_xlsx
 from src.export.piso_writer import write_piso_xlsx
 from src.export.iamspe_writer import write_iamspe_xlsx
 from src.export.apeoesp_writer import write_apeoesp_xlsx
 from src.export.chs_writer import write_chs_xlsx
+from src.export.ir_bonus_writer import write_ir_bonus_xlsx
 from src.teses.base_tese import BaseTese
 from src.version import VERSION, BUILD, CHANGELOG, CHANGELOG_VISIVEL
 
@@ -333,12 +335,68 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        periodos = resultado['periodos']
+        periodos = resultado.get('periodos', {})
         sorted_p = sorted(periodos.keys())
         n_meses = len(sorted_p)
 
+        # ---- IR sobre Bônus (RRA): parcelas por tipo, cálculo por fórmula ----
+        if resultado.get('tese_tipo') == 'ir_bonus':
+            parcelas_por_tipo = resultado.get('parcelas_por_tipo', {})
+            total_recuperar = resultado.get('total_recuperar', 0.0)
+            n_parcelas = sum(len(ps) for ps in parcelas_por_tipo.values())
+            tipo_nomes = {
+                'BR': 'Bonificação por Resultados',
+                'FUNDEB': 'Abono FUNDEB',
+                'DEJEC': 'DEJEC (isenção)',
+            }
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Parcelas de Bônus", n_parcelas)
+            with col2:
+                st.metric("Tipos Encontrados", len(parcelas_por_tipo))
+            with col3:
+                st.metric("Total a Recuperar", f"R$ {total_recuperar:,.2f}")
+
+            if not parcelas_por_tipo:
+                st.warning(
+                    "Nenhuma parcela de bônus (Bonificação por Resultados, Abono "
+                    "FUNDEB ou DEJEC) foi encontrada nos holerites. Verifique se o "
+                    "PDF é o holerite **suplementar** com os pagamentos retroativos."
+                )
+            else:
+                st.caption(
+                    "Cada aba da planilha traz um tipo de bônus, com as fórmulas do "
+                    "cálculo RRA e a aba **Dados** (tabelas IRPF). O nº de dependentes "
+                    "vem em branco (0) — ajuste na coluna H se houver dependentes."
+                )
+
+            for tipo, parcelas in parcelas_por_tipo.items():
+                subtotal = sum(TeseIRBonus.diferenca_parcela(p, tipo) for p in parcelas)
+                with st.expander(
+                    f"📋 {tipo_nomes.get(tipo, tipo)} — {len(parcelas)} parcelas "
+                    f"(R$ {subtotal:,.2f})",
+                    expanded=False,
+                ):
+                    preview = []
+                    for p in parcelas:
+                        meses = TeseIRBonus.meses_periodo(p['inicio'], p['fim'])
+                        preview.append({
+                            "Referência": f"{p['inicio'].strftime('%m/%Y')}–{p['fim'].strftime('%m/%Y')}",
+                            "Meses": meses,
+                            "Pagamento": p['pagamento'].strftime('%d/%m/%Y') if p['pagamento'] else "-",
+                            "Bônus": f"R$ {p['bonus']:,.2f}",
+                            "IR Pago": f"R$ {p['ir_pago']:,.2f}",
+                            "A Recuperar": f"R$ {TeseIRBonus.diferenca_parcela(p, tipo):,.2f}",
+                        })
+                    st.dataframe(preview, use_container_width=True, hide_index=True)
+
+            tmp_xlsx = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+            tmp_xlsx.close()
+            write_ir_bonus_xlsx(resultado, tmp_xlsx.name)
+
         # ---- IAMSPE: layout de pivot ----
-        if resultado.get('tese_tipo') == 'iamspe':
+        elif resultado.get('tese_tipo') == 'iamspe':
             rubricas = resultado['rubricas']
             total_geral = resultado['total_geral']
             total_por_rubrica = resultado['total_por_rubrica']
@@ -540,6 +598,9 @@ def main():
         elif resultado.get('tese_tipo') == 'piso':
             nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
             filename = f"02. PLANILHA DE CÁLCULO - QQ PISO_{nome}.xlsx"
+        elif resultado.get('tese_tipo') == 'ir_bonus':
+            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
+            filename = f"02.PLANILHA - IR SOBRE BÔNUS RRA - {nome}.xlsx"
         else:
             nome_safe = resultado['nome_cliente'].replace(' ', '_')[:30]
             tese_safe = st.session_state.tese_key
