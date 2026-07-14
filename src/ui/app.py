@@ -22,7 +22,7 @@ from src.export.iamspe_writer import write_iamspe_xlsx
 from src.export.apeoesp_writer import write_apeoesp_xlsx
 from src.export.chs_writer import write_chs_xlsx
 from src.teses.base_tese import BaseTese
-from src.version import VERSION, CHANGELOG
+from src.version import VERSION, BUILD, CHANGELOG, CHANGELOG_VISIVEL
 
 
 # --- Page config ---
@@ -157,10 +157,10 @@ def render_header():
         <p>Pinheiro Advocacia — Extração e Cálculo de Teses</p>
     </div>
     """, unsafe_allow_html=True)
-    st.caption(f"versão {VERSION}")
+    st.caption(f"versão {VERSION} · build {BUILD}")
 
-    with st.expander("🆕 Novidades e histórico de atualizações"):
-        for versao, data, mudancas in CHANGELOG:
+    with st.expander("🆕 Últimas atualizações"):
+        for versao, data, mudancas in CHANGELOG[:CHANGELOG_VISIVEL]:
             st.markdown(f"**Versão {versao}** · {data}")
             for m in mudancas:
                 st.markdown(f"- {m}")
