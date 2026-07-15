@@ -96,11 +96,9 @@ def write_piso_xlsx(resultado: dict, output_path: str) -> str:
     _cabecalho(ws, nome_cliente)
     _corpo(ws, periodos, situacao_por_periodo)
 
-    # Proteção: trava tudo, exceto as células de entrada (marcadas no corpo).
-    # formatColumns=False libera o ajuste de largura das colunas mesmo com a
-    # planilha protegida.
-    ws.protection.sheet = True
-    ws.protection.formatColumns = False
+    # Planilha totalmente editável: sem proteção de folha, todas as células
+    # podem ser alteradas livremente pelo estagiário.
+    ws.protection.sheet = False
 
     _larguras(ws)
     _layout_impressao(ws)

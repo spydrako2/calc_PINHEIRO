@@ -59,17 +59,12 @@ class TestTesePisoInativo:
         assert n13 >= 1           # há fechamentos de 13º
         assert n13f == 0          # inativo NÃO gera 1/3 de férias
 
-    def test_planilha_protegida_com_entradas_editaveis(self, resultado, tmp_path):
+    def test_planilha_totalmente_editavel(self, resultado, tmp_path):
         out = tmp_path / "elza_piso.xlsx"
         write_piso_xlsx(resultado, str(out))
         ws = openpyxl.load_workbook(out).active
-        assert ws.protection.sheet is True
-        # Linha 4 = primeiro mês. B (piso), D (quinq), G (tem 6ª) editáveis;
-        # fórmulas (C, E, F, H, I) travadas.
-        assert ws.cell(row=4, column=2).protection.locked is False   # B
-        assert ws.cell(row=4, column=4).protection.locked is False   # D
-        assert ws.cell(row=4, column=7).protection.locked is False   # G
-        assert ws.cell(row=4, column=9).protection.locked is True    # I (total)
+        # Planilha sem proteção de folha: todas as células são editáveis.
+        assert ws.protection.sheet is False
 
 
 class TestTesePisoAtivo:
