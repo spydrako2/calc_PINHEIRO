@@ -621,23 +621,32 @@ def main():
         with open(tmp_xlsx.name, "rb") as f:
             xlsx_bytes = f.read()
 
-        if resultado.get('tese_tipo') == 'chs':
-            # Padrão Pinheiro: "02.PLANILHA DE CÁLCULOS_CHS - {ATIVO|INATIVO} - {NOME}"
+        # Padrão Pinheiro uniforme (OBRIGATÓRIO para toda tese, atual ou futura):
+        #   "02. PLANILHA DE CÁLCULOS_{NOME DA TESE}_{NOME DO CLIENTE}"
+        # Teses novas seguem o padrão automaticamente via fallback (usa o .nome da
+        # classe da tese). Só adicione uma entrada no mapa abaixo se quiser um rótulo
+        # de arquivo diferente do .nome da classe.
+        NOMES_TESE_ARQUIVO = {
+            'piso': 'PISO DOCENTE',
+            'iamspe': 'ACÚMULO IAMSPE',
+            'apeoesp': 'APEOESP',
+            'chs': 'CHS',
+            'ir_bonus': 'IR SOBRE BÔNUS RRA',
+        }
+        tipo = resultado.get('tese_tipo', '')
+        nome_tese = NOMES_TESE_ARQUIVO.get(tipo)
+        if not nome_tese:
+            # Fallback: nome da classe da tese ativa
+            tese_cls = TESES_DISPONIVEIS.get(st.session_state.get('tese_key'))
+            nome_tese = tese_cls.nome.upper() if tese_cls else str(tipo).upper()
+        if tipo == 'chs':
+            # CHS mantém ATIVO/INATIVO como parte do nome da tese
             situacao_nome = {'ativo': 'ATIVO', 'inativo': 'INATIVO'}.get(
                 resultado.get('situacao', 'ativo'), 'ATIVO'
             )
-            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
-            filename = f"02.PLANILHA DE CÁLCULOS_CHS - {situacao_nome} - {nome}.xlsx"
-        elif resultado.get('tese_tipo') == 'piso':
-            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
-            filename = f"02. PLANILHA DE CÁLCULO - QQ PISO_{nome}.xlsx"
-        elif resultado.get('tese_tipo') == 'ir_bonus':
-            nome = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
-            filename = f"02.PLANILHA - IR SOBRE BÔNUS RRA - {nome}.xlsx"
-        else:
-            nome_safe = resultado['nome_cliente'].replace(' ', '_')[:30]
-            tese_safe = st.session_state.tese_key
-            filename = f"HoleritePRO_{nome_safe}_{tese_safe}.xlsx"
+            nome_tese = f"CHS - {situacao_nome}"
+        nome_cliente = re.sub(r'[\\/:*?"<>|]', '', resultado['nome_cliente']).strip()
+        filename = f"02. PLANILHA DE CÁLCULOS_{nome_tese}_{nome_cliente}.xlsx"
 
         st.download_button(
             label="⬇️ Download XLSX",

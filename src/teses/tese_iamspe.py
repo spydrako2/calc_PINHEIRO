@@ -26,6 +26,11 @@ class TeseIAMSPE:
     )
     tese_tipo = "iamspe"
 
+    # Códigos de IAMSPE sobre 13º salário. Aparecem duas vezes por ano:
+    # na antecipação (folha normal, geralmente meio do ano) e na folha do
+    # 13º (competência "13/AAAA"). Ambos são consolidados numa linha anual.
+    CODES_13 = {"070122", "070123", "070124"}
+
     # Rubricas IAMSPE conhecidas (fallback para quando a denominação não vier no PDF)
     LABELS_CONHECIDOS = {
         "070006": "70.006: IAMSPE",
@@ -58,6 +63,29 @@ class TeseIAMSPE:
         # (outros descontos como IRRF e Previdência também começam com 070xxx)
         return "IAMSPE" in denominacao.upper()
 
+    @classmethod
+    def _is_iamspe_13(cls, codigo: str, denominacao: str) -> bool:
+        """IAMSPE sobre 13º salário — código dedicado (070122/123/124) ou
+        denominação mencionando '13' (SALÁRIO). Vai para a linha anual do 13º."""
+        if codigo in cls.CODES_13:
+            return True
+        d = denominacao.upper()
+        return "IAMSPE" in d and ("13" in d or "DÉCIMO" in d or "DECIMO" in d)
+
+    @staticmethod
+    def _competencia(texto: str, parser: DDPEParser) -> str:
+        """Competência 'AAAA-MM'. Faz fallback para o layout DDPE ('Tipo da Folha'),
+        que reconhece a folha do 13º como mês '13' — caso em que a regex genérica
+        de BaseTese falha e a página seria descartada indevidamente."""
+        comp = BaseTese._extract_competencia(texto)
+        if comp:
+            return comp
+        comp_ddpe = parser._extract_competencia_ddpe(texto)  # 'MM/AAAA', ex.: '13/2025'
+        if comp_ddpe:
+            mm, yyyy = comp_ddpe.split('/')
+            return f"{yyyy}-{int(mm):02d}"
+        return ""
+
     def _make_label(self, codigo: str, denominacao: str) -> str:
         """Gera label no formato '70.006: IAMSPE' para uso como cabeçalho."""
         if codigo in self.LABELS_CONHECIDOS:
@@ -72,6 +100,8 @@ class TeseIAMSPE:
         nome_cliente = "UNKNOWN"
         # {payment_key: {codigo: {'normal': float, 'atrasados': [(comp, val)]}}}
         pivot: dict = defaultdict(lambda: defaultdict(lambda: {'normal': 0.0, 'atrasados': []}))
+        # {ano: {codigo: {'normal': float, 'atrasados': [(comp, val)]}}} — IAMSPE do 13º
+        decimo: dict = defaultdict(lambda: defaultdict(lambda: {'normal': 0.0, 'atrasados': []}))
         # {codigo: label} — ordem de aparição
         rubrica_labels: dict = {}
 
@@ -79,7 +109,7 @@ class TeseIAMSPE:
             if not parser.detect_template(p.texto):
                 continue
 
-            comp = BaseTese._extract_competencia(p.texto)
+            comp = self._competencia(p.texto, parser)
             if not comp:
                 continue
 
@@ -97,12 +127,23 @@ class TeseIAMSPE:
                 if v.codigo not in rubrica_labels:
                     rubrica_labels[v.codigo] = self._make_label(v.codigo, v.denominacao)
 
+                is_atrasado = v.natureza.value in ('A', 'R')
+
+                # IAMSPE do 13º: consolida o valor cheio na linha anual (antecipação
+                # + folha do 13º), sem ratear por período nem virar linha mensal.
+                if self._is_iamspe_13(v.codigo, v.denominacao):
+                    ano = comp[:4]
+                    if is_atrasado:
+                        decimo[ano][v.codigo]['atrasados'].append((comp, abs(v.valor)))
+                    else:
+                        decimo[ano][v.codigo]['normal'] += abs(v.valor)
+                    continue
+
                 # Expand period range; row = payment month (comp+1)
                 periodo_fim = v.periodo_fim or comp
                 periodo_inicio = v.periodo_inicio or periodo_fim
                 months = BaseTese._months_in_range(periodo_inicio, periodo_fim)
                 valores = BaseTese._distribute_valor(abs(v.valor), len(months))
-                is_atrasado = v.natureza.value in ('A', 'R')
 
                 for m, val in zip(months, valores):
                     pay_key = BaseTese.mes_pagamento(m)
@@ -114,11 +155,22 @@ class TeseIAMSPE:
         # Ordenar períodos cronologicamente e códigos numericamente
         sorted_periods = sorted(pivot.keys())
         sorted_codes = sorted(rubrica_labels.keys())
+        sorted_years = sorted(decimo.keys())
+
+        ZERO = {'normal': 0.0, 'atrasados': []}
 
         periodos_out = OrderedDict()
         for per in sorted_periods:
             periodos_out[per] = {
-                code: dict(pivot[per].get(code, {'normal': 0.0, 'atrasados': []}))
+                code: dict(pivot[per].get(code, ZERO))
+                for code in sorted_codes
+            }
+
+        # IAMSPE do 13º consolidado por ano: {ano: {code: {'normal', 'atrasados'}}}
+        decimo_out = OrderedDict()
+        for ano in sorted_years:
+            decimo_out[ano] = {
+                code: dict(decimo[ano].get(code, ZERO))
                 for code in sorted_codes
             }
 
@@ -126,9 +178,9 @@ class TeseIAMSPE:
             return cell['normal'] + sum(v for _, v in cell['atrasados'])
 
         total_por_rubrica = {
-            code: sum(
-                _total_cell(pivot[per].get(code, {'normal': 0.0, 'atrasados': []}))
-                for per in sorted_periods
+            code: (
+                sum(_total_cell(pivot[per].get(code, ZERO)) for per in sorted_periods)
+                + sum(_total_cell(decimo[ano].get(code, ZERO)) for ano in sorted_years)
             )
             for code in sorted_codes
         }
@@ -145,6 +197,7 @@ class TeseIAMSPE:
             'tese_tipo': self.tese_tipo,
             'rubricas': rubricas,             # {code: label}
             'periodos': periodos_out,          # {payment_key: {code: {'normal', 'atrasados'}}}
+            'decimo_terceiro': decimo_out,     # {ano: {code: {'normal', 'atrasados'}}}
             'total_por_rubrica': total_por_rubrica,
             'total_geral': total_geral,
         }
