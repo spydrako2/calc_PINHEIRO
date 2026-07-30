@@ -176,15 +176,22 @@ class BaseTese(ABC):
             return f"{yyyy}-{int(mm):02d}"
         return None
 
+    # Quantas linhas após o cabeçalho "Nome ... C.P.F" procurar pelo nome.
+    # Holerites juntados a processo vêm com carimbo ("fls. 103", "protocolado
+    # em ... sob", nº do processo) impresso por cima, e o PDF intercala esses
+    # fragmentos entre o cabeçalho e a linha de dados. Ler só a linha seguinte
+    # devolvia UNKNOWN nesses arquivos.
+    LINHAS_BUSCA_NOME = 5
+
     @staticmethod
     def _extract_nome(texto: str) -> str:
         lines = texto.split('\n')
         for i, line in enumerate(lines):
             lu = line.upper()
             if 'NOME' in lu and ('C.P.F' in lu or 'CPF' in lu):
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    m = re.match(r'^([A-ZÁÉÍÓÚÂÃÕÊÔÇÜ\s]+)', next_line)
+                fim = min(i + 1 + BaseTese.LINHAS_BUSCA_NOME, len(lines))
+                for j in range(i + 1, fim):
+                    m = re.match(r'^([A-ZÁÉÍÓÚÂÃÕÊÔÇÜ\s]+)', lines[j].strip())
                     if m:
                         nome = m.group(1).strip()
                         if len(nome) > 3:
@@ -229,7 +236,17 @@ class BaseTese(ABC):
 
     @staticmethod
     def _extract_quinquenios(verba) -> int:
+        """
+        Quantidade de quinquênios da verba.
+
+        Atenção à unidade: o holerite às vezes lança a quantidade em QUINQ
+        ("005 QUINQ" = 5 quinquênios) e às vezes em percentual
+        ("10,00 PERC." = 10% = 2 quinquênios, pois cada quinquênio vale 5%).
+        Ler o percentual como contagem inflaria o cálculo em 5x.
+        """
         if verba.quantidade is not None:
+            if (verba.unidade or "").upper().startswith("PERC"):
+                return int(verba.quantidade / 5)
             return int(verba.quantidade)
         m = re.search(r'(\d{1,3})\s*QUINQ', verba.denominacao, re.IGNORECASE)
         if m:

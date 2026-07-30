@@ -192,11 +192,16 @@ class DDPEParser(BaseParser):
         # CODIGO  DENOM  [NAT]  [QTD]  [UNID]  [PERIODO]  VALOR[+/-]
         # Simplified fallback: CODIGO  DENOM  VALOR
         codigo_start = re.compile(r'^(\d{2}\.?\d{3})\s+')
+        # Todo valor monetário de holerite tem centavos (2 casas após ',' ou '.').
+        # Exigir isso é o que impede que lixo de OCR — tipicamente pedaços de
+        # data sem separador decimal, ex.: o período "01/01/2026 A 31/01/2026"
+        # lido como "0101/2026A 31012026" — seja aceito como valor (R$ 31 milhões).
+        _VALOR = r'[-]?\d[\d.]*[.,]\d{2}'
         # Value at end with optional +/- sign
-        valor_end_full = re.compile(r'([-]?\d[\d.,]*\d)\s*([+\-])\s*$')
-        valor_end_simple = re.compile(r'([-]?\d[\d.,]*\d)\s*$')
+        valor_end_full = re.compile(rf'({_VALOR})\s*([+\-])\s*$')
+        valor_end_simple = re.compile(rf'({_VALOR})\s*$')
         # Standalone value line (PyMuPDF multi-line: value on its own line)
-        standalone_valor_re = re.compile(r'^([-]?\d[\d.,]*\d)\s*([+\-])\s*$')
+        standalone_valor_re = re.compile(rf'^({_VALOR})\s*([+\-])\s*$')
 
         # Detect context for fallback natureza (section-based)
         is_atrasado_section = False
@@ -340,9 +345,13 @@ class DDPEParser(BaseParser):
             middle = middle[:periodo_match.start()].strip()
 
         # Extract unidade (PERC., VALOR, DIAS, QTDE, AULAS, HORAS)
+        # O '\b' final só vale depois de caractere de palavra: em "PERC." o token
+        # termina em ponto, então '\bPERC\.\b' nunca casava e a quantidade ficava
+        # grudada na denominação ("IAMSPE 2,00 PERC.", qtde=None).
         for unit in self.VALID_UNITS:
             unit_pattern = re.escape(unit)
-            unit_match = re.search(rf'\b{unit_pattern}\b', middle, re.IGNORECASE)
+            sufixo = r'\b' if unit[-1].isalnum() else r'(?!\w)'
+            unit_match = re.search(rf'\b{unit_pattern}{sufixo}', middle, re.IGNORECASE)
             if unit_match:
                 result['unidade'] = unit.upper()
                 middle = (middle[:unit_match.start()] + middle[unit_match.end():]).strip()

@@ -269,6 +269,32 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
+                if diag.get('ilegivel'):
+                    st.error(
+                        "❌ **A qualidade deste PDF está baixa demais para o "
+                        "cálculo.** Os holerites foram reconhecidos, mas o texto "
+                        "está tão degradado que quase nenhuma verba pôde ser lida "
+                        f"(apenas {diag['verbas_por_pagina']:.1f} verbas por "
+                        "holerite; o normal é 8 a 15).\n\n"
+                        "Isso costuma acontecer com PDF **comprimido** ou "
+                        "escaneado em baixa resolução. **Envie o arquivo "
+                        "original**, sem compressão — as teses não vão encontrar "
+                        "valores neste aqui."
+                    )
+
+                comps_ocr = diag.get('comps_ocr') or []
+                if comps_ocr:
+                    lista = ", ".join(comps_ocr[:8])
+                    if len(comps_ocr) > 8:
+                        lista += f" … (+{len(comps_ocr) - 8})"
+                    st.warning(
+                        f"⚠️ **{len(comps_ocr)} holerite(s) estão escaneados (imagem) "
+                        f"e foram lidos por OCR:** {lista}.\n\n"
+                        "O OCR erra dígitos com frequência. **Confira os valores "
+                        "desses meses na planilha** contra o holerite original antes "
+                        "de usar o cálculo."
+                    )
+
                 if st.button("Avançar →", type="primary"):
                     st.session_state.step = 1
                     st.rerun()
@@ -498,6 +524,34 @@ def main():
                     f"**Cálculo {situacao_label}**"
                 )
 
+            # A jornada (coluna D) é a base do cálculo: as fórmulas de CHS
+            # Recebida/Devida são =IF(D=0;0;...). Sem ela a planilha inteira sai
+            # zerada. O holerite de aposentado (SPPREV) não traz a jornada, então
+            # isso é comum — mas precisa ficar visível ANTES do download.
+            sem_jornada = [p for p in sorted_p if not periodos[p]['jornada_horas']]
+            if sem_jornada:
+                meses_txt = ", ".join(
+                    BaseTese.format_comp_display(p) for p in sem_jornada[:6]
+                )
+                if len(sem_jornada) > 6:
+                    meses_txt += f" … (+{len(sem_jornada) - 6})"
+                if len(sem_jornada) == len(sorted_p):
+                    st.error(
+                        "⚠️ **A jornada não foi encontrada em NENHUM mês — a "
+                        "planilha vai sair com TOTAL BRUTO R$ 0,00.**\n\n"
+                        "O holerite de aposentado (SPPREV) não informa a jornada, "
+                        "que é a base do cálculo. Preencha a **coluna D (Jornada)** "
+                        "na planilha — as células estão marcadas em laranja — e os "
+                        "valores serão calculados automaticamente."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ **{len(sem_jornada)} de {len(sorted_p)} meses estão sem "
+                        f"jornada** e ficarão zerados na planilha (células laranja na "
+                        f"coluna D): {meses_txt}.\n\n"
+                        "Preencha a jornada desses meses para que entrem no total."
+                    )
+
             with st.expander("📋 Preview dos dados", expanded=False):
                 preview_data = []
                 for per in sorted_p:
@@ -704,11 +758,43 @@ def _diagnosticar_pdf(pdf_path: str) -> dict:
         if nome and nome != "UNKNOWN":
             break
 
+    # Páginas escaneadas passam por OCR, que erra dígitos (já vimos "571,74"
+    # virar "71,74"). Os valores dessas competências precisam ser conferidos
+    # à mão contra o holerite original.
+    comps_ocr = []
+    for p in validas:
+        if p.metodo != "OCR":
+            continue
+        comp = BaseTese._extract_competencia(p.texto)
+        comps_ocr.append(BaseTese.format_comp_display(comp) if comp else f"pág. {p.numero}")
+
+    # Um holerite legível rende ~8-15 verbas por página. Quando o OCR degrada a
+    # coluna de código (ex.: "001001" vira "DO100"), a página continua sendo
+    # reconhecida como holerite mas quase nada é extraído — e TODAS as teses
+    # dizem "nenhuma verba encontrada", fazendo o estagiário culpar a tese.
+    # Medir verbas/página distingue "tese errada" de "PDF ilegível".
+    verbas_por_pagina = 0.0
+    if validas:
+        amostra = validas[:20]
+        total_verbas = 0
+        for p in amostra:
+            parser = ddpe if ddpe.detect_template(p.texto) else spprev
+            pi = type(parser)()
+            pi.paginas = [p]
+            try:
+                total_verbas += len(pi._extract_verbas())
+            except Exception:
+                pass
+        verbas_por_pagina = total_verbas / len(amostra)
+
     return {
         'erro_leitura': False,
         'reconhecido': len(validas) > 0,
         'nome': nome,
         'n_holerites': len(validas),
+        'comps_ocr': comps_ocr,
+        'verbas_por_pagina': verbas_por_pagina,
+        'ilegivel': bool(validas) and verbas_por_pagina < 3,
     }
 
 

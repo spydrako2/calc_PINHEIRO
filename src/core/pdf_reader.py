@@ -3,6 +3,10 @@ PDF Reader with hybrid text/OCR extraction
 Motor primário: PyMuPDF (fitz) — ~10-20x mais rápido que pdfplumber
 Fallback OCR: pytesseract para páginas escaneadas
 """
+import os
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+
 import fitz  # PyMuPDF
 import pdfplumber  # mantido apenas para extrair_metadados_basicos
 from pathlib import Path
@@ -31,11 +35,41 @@ class PDFReader:
     # Fuzzy matching thresholds
     FUZZY_MATCH_THRESHOLD = 0.75  # 75% match = valid match
 
+    # OCR é ~2s por página (o tesseract domina o custo; o render do fitz é ~0,2s).
+    # Como o tesseract roda num subprocesso, o GIL é liberado e threads dão
+    # speedup quase linear. O render fica FORA das threads: PyMuPDF não é
+    # thread-safe e usar o mesmo documento em paralelo pode derrubar o processo.
+    OCR_MAX_WORKERS = min(8, os.cpu_count() or 1)
+
+    # Cache de leitura: o app lê o mesmo PDF duas vezes (diagnóstico no upload e
+    # depois no cálculo da tese). Sem cache, todo PDF escaneado paga OCR em
+    # dobro. As páginas guardam só texto, então o custo de memória é baixo.
+    _CACHE_MAX = 4
+    _cache: "OrderedDict[tuple, List[PaginaExtraida]]" = OrderedDict()
+
+    @staticmethod
+    def limpar_cache() -> None:
+        """Descarta o cache de leitura (usar em testes ou ao trocar de cliente)."""
+        PDFReader._cache.clear()
+
+    @staticmethod
+    def _chave_cache(pdf_path: Path):
+        """Identidade do arquivo: caminho + mtime + tamanho (pega reescritas)."""
+        try:
+            st = pdf_path.stat()
+            return (str(pdf_path.resolve()), st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
     @staticmethod
     def read_pdf(pdf_path: str) -> List[PaginaExtraida]:
         """
         Read PDF page by page usando PyMuPDF (fitz) — motor rápido.
         Fallback para OCR via pytesseract em páginas sem texto suficiente.
+
+        Páginas que precisam de OCR são processadas em paralelo (ver
+        OCR_MAX_WORKERS) e o resultado do arquivo fica em cache, para o mesmo
+        PDF não ser lido/OCRado duas vezes na mesma sessão.
 
         Args:
             pdf_path: Path to PDF file
@@ -51,28 +85,36 @@ class PDFReader:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        paginas = []
+        chave = PDFReader._chave_cache(pdf_path)
+        if chave is not None and chave in PDFReader._cache:
+            PDFReader._cache.move_to_end(chave)
+            return PDFReader._cache[chave]
 
         try:
             doc = fitz.open(str(pdf_path))
-            for i, page in enumerate(doc, 1):
-                texto = PDFReader._extrair_texto_fitz(page)
+            # Materializa as páginas: o documento é percorrido mais de uma vez
+            # (texto primeiro, OCR depois) e um iterador seria consumido.
+            pages = list(doc)
 
-                if len(texto) >= PDFReader.LIMIAR_MINIMO_CHARS:
-                    metodo = "TEXTO"
-                    confianca = PDFReader.CONFIANCA_TEXTO
+            textos = [PDFReader._extrair_texto_fitz(p) for p in pages]
+            pendentes = [
+                i for i, t in enumerate(textos)
+                if len(t) < PDFReader.LIMIAR_MINIMO_CHARS
+            ]
+            textos_ocr = PDFReader._ocr_em_lote(pages, pendentes)
+
+            paginas = []
+            for i, texto in enumerate(textos):
+                if i not in pendentes:
+                    metodo, confianca = "TEXTO", PDFReader.CONFIANCA_TEXTO
+                elif textos_ocr.get(i):
+                    texto = textos_ocr[i]
+                    metodo, confianca = "OCR", PDFReader.CONFIANCA_OCR
                 else:
-                    texto_ocr = PDFReader._apply_ocr_fitz(page)
-                    if texto_ocr:
-                        texto = texto_ocr
-                        metodo = "OCR"
-                        confianca = PDFReader.CONFIANCA_OCR
-                    else:
-                        metodo = "TEXTO"
-                        confianca = 0.3
+                    metodo, confianca = "TEXTO", 0.3
 
                 paginas.append(PaginaExtraida(
-                    numero=i,
+                    numero=i + 1,
                     texto=texto,
                     metodo=metodo,
                     confianca=confianca,
@@ -82,7 +124,56 @@ class PDFReader:
         except Exception as e:
             raise Exception(f"Error reading PDF {pdf_path}: {str(e)}")
 
+        if chave is not None:
+            PDFReader._cache[chave] = paginas
+            PDFReader._cache.move_to_end(chave)
+            while len(PDFReader._cache) > PDFReader._CACHE_MAX:
+                PDFReader._cache.popitem(last=False)
+
         return paginas
+
+    @staticmethod
+    def _ocr_em_lote(pages: list, indices: List[int]) -> Dict[int, Optional[str]]:
+        """
+        Aplica OCR nas páginas indicadas, em paralelo quando vale a pena.
+
+        O render (PyMuPDF) roda sequencialmente na thread principal; só o
+        tesseract vai para as threads. Processa em lotes do tamanho do pool
+        para não segurar todas as imagens em memória de uma vez.
+        """
+        if not indices:
+            return {}
+
+        # Página única: caminho direto (mais simples e sem overhead de pool).
+        if len(indices) == 1:
+            i = indices[0]
+            return {i: PDFReader._apply_ocr_fitz(pages[i])}
+
+        workers = max(1, PDFReader.OCR_MAX_WORKERS)
+        resultado: Dict[int, Optional[str]] = {}
+
+        for inicio in range(0, len(indices), workers):
+            lote = indices[inicio:inicio + workers]
+            imagens = [(i, PDFReader._render_para_ocr(pages[i])) for i in lote]
+
+            prontas = [(i, img) for i, img in imagens if img is not None]
+            for i, img in imagens:
+                if img is None:
+                    resultado[i] = None
+
+            if not prontas:
+                continue
+            if len(prontas) == 1:
+                i, img = prontas[0]
+                resultado[i] = PDFReader._ocr_imagem(img)
+                continue
+
+            with ThreadPoolExecutor(max_workers=min(workers, len(prontas))) as pool:
+                textos = pool.map(PDFReader._ocr_imagem, [img for _, img in prontas])
+                for (i, _), texto in zip(prontas, textos):
+                    resultado[i] = texto
+
+        return resultado
 
     @staticmethod
     def _extrair_texto_fitz(page) -> str:
@@ -111,25 +202,16 @@ class PDFReader:
             return ""
 
     @staticmethod
-    def _apply_ocr_fitz(page) -> Optional[str]:
-        """OCR via renderização de página fitz → imagem → pytesseract.
+    def _render_para_ocr(page):
+        """Renderiza a página fitz na imagem que vai para o OCR.
 
-        Usa 3x scale, conversão para escala de cinza com reforço de contraste
-        e configuração explícita do caminho do tesseract para Windows.
-        Corta automaticamente barras de UI de capturas mobile (top/bottom ~5%).
+        Usa 3x scale, escala de cinza e reforço de contraste. Corta barras de
+        UI de capturas mobile (topo ~5%, rodapé ~8%).
+
+        Fica FORA das threads de OCR: PyMuPDF não é thread-safe.
         """
         try:
-            import pytesseract
             from PIL import Image, ImageEnhance
-
-            # Configurar caminho do Tesseract no Windows se não estiver no PATH
-            import shutil
-            if not shutil.which("tesseract"):
-                import os
-                pytesseract.pytesseract.tesseract_cmd = (
-                    os.environ.get("TESSERACT_CMD")
-                    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-                )
 
             # Renderizar em 3x para melhor qualidade OCR
             mat = fitz.Matrix(3, 3)
@@ -142,10 +224,71 @@ class PDFReader:
 
             # Escala de cinza + contraste aumentado para melhor leitura
             img = img.convert("L")
-            img = ImageEnhance.Contrast(img).enhance(2.0)
+            return ImageEnhance.Contrast(img).enhance(2.0)
+        except Exception:
+            return None
+
+    # Confiança mínima do OSD para aceitar a rotação. Abaixo disso é chute e
+    # girar uma página que já estava certa seria pior do que não fazer nada.
+    OSD_CONFIANCA_MINIMA = 1.0
+    # None = ainda não testado; False = osd.traineddata indisponível no ambiente
+    _osd_disponivel: Optional[bool] = None
+
+    @staticmethod
+    def _corrigir_orientacao(img):
+        """Endireita página digitalizada de lado (foto/print girado).
+
+        Uma página a 90/180/270° é perda TOTAL hoje: o OCR devolve texto
+        ilegível, o template não é reconhecido e o holerite some do cálculo
+        sem nenhum aviso. O OSD do tesseract detecta e corrige.
+
+        Depende de `osd.traineddata`. Se não existir no ambiente, desativa-se
+        sozinho na primeira tentativa e o fluxo segue como antes.
+        """
+        if img is None or PDFReader._osd_disponivel is False:
+            return img
+        try:
+            import pytesseract
+
+            osd = pytesseract.image_to_osd(img)
+            PDFReader._osd_disponivel = True
+
+            graus = confianca = 0.0
+            for linha in osd.split("\n"):
+                if linha.startswith("Rotate:"):
+                    graus = int(linha.split(":")[1])
+                elif linha.startswith("Orientation confidence:"):
+                    confianca = float(linha.split(":")[1])
+
+            if graus and confianca >= PDFReader.OSD_CONFIANCA_MINIMA:
+                return img.rotate(-graus, expand=True, fillcolor=255)
+        except Exception:
+            # osd.traineddata ausente (ex.: Streamlit Cloud) ou página sem texto
+            # suficiente para o OSD decidir — segue sem girar.
+            PDFReader._osd_disponivel = False
+        return img
+
+    @staticmethod
+    def _ocr_imagem(img) -> Optional[str]:
+        """Roda o tesseract sobre a imagem já renderizada.
+
+        Seguro para chamar de várias threads: o pytesseract executa o binário
+        do tesseract num subprocesso, liberando o GIL enquanto espera.
+        """
+        if img is None:
+            return None
+        try:
+            import pytesseract
+
+            # Configurar caminho do Tesseract no Windows se não estiver no PATH
+            import shutil
+            if not shutil.which("tesseract"):
+                pytesseract.pytesseract.tesseract_cmd = (
+                    os.environ.get("TESSERACT_CMD")
+                    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                )
 
             # Configurar tessdata local (~\tessdata) via variável de ambiente
-            import os
             tessdata_local = os.path.join(os.path.expanduser("~"), "tessdata")
             lang = "por"
             if os.path.isdir(tessdata_local) and os.path.isfile(
@@ -155,13 +298,47 @@ class PDFReader:
             else:
                 lang = "eng"
 
-            texto = pytesseract.image_to_string(img, lang=lang, config="--oem 3 --psm 6")
-            if not texto or len(texto.strip()) == 0:
-                return None
-            lines = [line.strip() for line in texto.split("\n")]
-            return "\n".join(line for line in lines if line) or None
+            def _ler(imagem):
+                bruto = pytesseract.image_to_string(
+                    imagem, lang=lang, config="--oem 3 --psm 6")
+                if not bruto or not bruto.strip():
+                    return None
+                linhas = [l.strip() for l in bruto.split("\n")]
+                return "\n".join(l for l in linhas if l) or None
+
+            texto = _ler(img)
+
+            # Só paga o custo do OSD (uma chamada extra ao tesseract, ~1s) quando
+            # a leitura não rendeu um holerite reconhecível. Em PDF normal isso
+            # nunca dispara; em página girada, é a diferença entre o holerite
+            # entrar no cálculo ou sumir sem aviso.
+            if not PDFReader._parece_holerite(texto):
+                girada = PDFReader._corrigir_orientacao(img)
+                if girada is not img:
+                    texto_girado = _ler(girada)
+                    if PDFReader._parece_holerite(texto_girado):
+                        return texto_girado
+
+            return texto
         except Exception:
             return None
+
+    @staticmethod
+    def _parece_holerite(texto: Optional[str]) -> bool:
+        """A leitura resultou num holerite que algum parser reconhece?"""
+        if not texto:
+            return False
+        # Import adiado: os parsers importam PaginaExtraida deste módulo.
+        from src.core.parsers.ddpe_parser import DDPEParser
+        from src.core.parsers.spprev_aposentado_parser import SpprevAposentadoParser
+
+        return (DDPEParser().detect_template(texto)
+                or SpprevAposentadoParser().detect_template(texto))
+
+    @staticmethod
+    def _apply_ocr_fitz(page) -> Optional[str]:
+        """OCR de uma página: render + tesseract."""
+        return PDFReader._ocr_imagem(PDFReader._render_para_ocr(page))
 
     # --- Métodos legados mantidos para compatibilidade ---
 

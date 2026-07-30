@@ -197,11 +197,16 @@ class TestCoverageGaps:
 
                 # Page 1 has text, pages 2/3 don't
                 text_side_effects = ["Page 1 has lots of text" * 3, "", ""]
+                # Páginas sem texto vão para OCR em paralelo: o render acontece
+                # na thread principal e só o tesseract é paralelizado, então o
+                # mock é indexado pela página (a ordem de conclusão não importa).
+                ocr_por_pagina = {page2: "OCR text for page 2", page3: None}
                 with patch.object(PDFReader, '_extrair_texto_fitz', side_effect=text_side_effects):
-                    with patch.object(PDFReader, '_apply_ocr_fitz') as mock_ocr:
-                        mock_ocr.side_effect = ["OCR text for page 2", None]
+                    with patch.object(PDFReader, '_render_para_ocr', side_effect=lambda p: p):
+                        with patch.object(PDFReader, '_ocr_imagem',
+                                          side_effect=lambda p: ocr_por_pagina[p]):
 
-                        paginas = PDFReader.read_pdf("dummy.pdf")
+                            paginas = PDFReader.read_pdf("dummy.pdf")
 
                         assert len(paginas) == 3
                         assert paginas[0].metodo == "TEXTO"
